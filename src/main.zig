@@ -1,5 +1,5 @@
 const std = @import("std");
-const FileEntry = @import("zip.zig").FileEntry;
+const ZipFile = @import("zip.zig").ZipFile;
 
 pub fn main() anyerror!void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -7,8 +7,14 @@ pub fn main() anyerror!void {
     var alloc = gpa.allocator();
 
     var file = try std.fs.cwd().openFile("out.zip", .{});
-    var zipFile = try FileEntry.new(&file, alloc, true);
+    var zipFile = try ZipFile.new(&file, alloc);
     defer zipFile.deinit(alloc);
 
-    std.debug.print("{} {s}\n", .{zipFile.header, zipFile.header.fileName});
+    std.debug.print("{s}\n", .{zipFile.endOfCentralDirectoryRecord});
+    std.debug.print("{s}\n", .{zipFile.centralDirectoryFileHeader});
+
+    // try file.seekFromEnd(-22);
+    // var buf: [22]u8 = undefined;
+    // var read = try file.read(&buf);
+    // std.debug.print("{} {d}\n", .{read, buf});
 }
