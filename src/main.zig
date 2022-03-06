@@ -22,7 +22,14 @@ pub fn main() anyerror!void {
     for (zipFile.fileEntries.?) |f| {
         std.debug.print("file name = {s}\ncompressed size = {}\n", .{ f.header.fileName, f.contents.len });
 
-        _ = try f.decompressed(alloc);
+        var decompressed = try f.decompressed(alloc);
+        switch (decompressed) {
+            .Decompressed => |*d| {
+                std.debug.print("{s}\n", .{d.*});
+                alloc.free(d.*);
+            },
+            else => {}
+        }
 
         std.debug.print("\n", .{});
     }
