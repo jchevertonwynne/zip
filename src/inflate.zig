@@ -104,6 +104,9 @@ pub fn inflate(deflated: []const u8, alloc: std.mem.Allocator) ![]u8 {
                     }
                 }
             },
+            .Dynamic => {
+
+            },
             else => {},
         }
 
