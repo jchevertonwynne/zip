@@ -33,8 +33,9 @@ pub const ZipFile = struct {
 
         var centralDirectoryFileHeaders = std.ArrayList(CentralDirectoryFileHeader).init(alloc);
         errdefer {
-            for (centralDirectoryFileHeaders.items) |*c|
+            for (centralDirectoryFileHeaders.items) |*c| {
                 c.deinit(alloc);
+            }
             centralDirectoryFileHeaders.deinit();
         }
 
@@ -62,8 +63,9 @@ pub const ZipFile = struct {
             alloc.free(entries.*);
         }
 
-        for (this.centralDirectoryFileHeaders) |*c|
+        for (this.centralDirectoryFileHeaders) |*c| {
             c.deinit(alloc);
+        }
         alloc.free(this.centralDirectoryFileHeaders);
 
         this.endOfCentralDirectoryRecord.deinit(alloc);
@@ -73,8 +75,9 @@ pub const ZipFile = struct {
     pub fn loadFiles(this: *@This(), file: *std.fs.File, alloc: std.mem.Allocator) !void {
         var files = std.ArrayList(FileEntry).init(alloc);
         errdefer {
-            for (files.items) |*f|
+            for (files.items) |*f| {
                 f.deinit(alloc);
+            }
             files.deinit();
         }
 
@@ -209,7 +212,7 @@ const EndOfCentralDirectoryRecord = struct {
     }
 };
 
-fn fillObject(comptime T: type, file: *std.fs.File, alloc: std.mem.Allocator, header: ?[4]u8) !T {
+fn fillObject(comptime T: type, file: *std.fs.File, alloc: std.mem.Allocator, comptime header: ?[4]u8) !T {
     // TODO - work out how to do cleanup
 
     // var allocatedSlices = std.BoundedArray(usize, @typeInfo(T).Struct.fields.len).init(0) catch unreachable;
@@ -254,7 +257,7 @@ fn fillObject(comptime T: type, file: *std.fs.File, alloc: std.mem.Allocator, he
             },
             .Pointer => |pointerType| {
                 if (pointerType.size != .Slice or pointerType.child != u8) {
-                    @compileError("only slice pointers are supported");
+                    @compileError("only support pointer is []u8");
                 }
                 const fieldLengthName = field.name ++ "Length";
                 var length = @field(result, fieldLengthName);
@@ -267,37 +270,9 @@ fn fillObject(comptime T: type, file: *std.fs.File, alloc: std.mem.Allocator, he
                 @field(result, field.name) = slice;
                 // allocatedSlices.append(fieldIndex) catch unreachable;
             },
-            else => {},
+            else => @compileError("unsupported field type: " ++ field.name),
         }
     }
 
-    return result;
-}
-
-fn readBytes(file: *std.fs.File, expectedRead: usize, dest: *[]u8, alloc: std.mem.Allocator) !void {
-    var buf = try alloc.alloc(u8, expectedRead);
-    errdefer alloc.free(buf);
-
-    var read = try file.read(buf);
-    if (read != expectedRead) {
-        return error.ReadTooShort;
-    }
-
-    dest.* = buf;
-}
-
-fn readFromBytes(comptime T: type, bytes: []u8, offset: usize) T {
-    if (@typeInfo(T).Int.signedness == .signed)
-        @compileError("function only takes an unsigned integer");
-
-    const size = @sizeOf(T);
-
-    var result: T = undefined;
-    var ind = offset + size;
-    while (ind > offset) {
-        ind -= 1;
-        result <<= 8;
-        result += bytes[ind];
-    }
     return result;
 }
