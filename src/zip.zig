@@ -300,6 +300,7 @@ const EndOfCentralDirectoryRecord = struct {
         errdefer alloc.free(endOfCentralDirectoryRecord.comment);
 
         return endOfCentralDirectoryRecord;
+        // return try fillObject(EndOfCentralDirectoryRecord, file, alloc);
     }
 
     fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
@@ -308,12 +309,51 @@ const EndOfCentralDirectoryRecord = struct {
     }
 };
 
-fn readBytes(file: *std.fs.File, toRead: usize, dest: *[]u8, alloc: std.mem.Allocator) !void {
-    var buf = try alloc.alloc(u8, toRead);
+fn fillObject(comptime T: type, file: *std.fs.File, alloc: std.mem.Allocator) !T {
+    var result: T = undefined;
+    inline for (@typeInfo(T).Struct.fields) |field| {
+        switch (@typeInfo(field.field_type)) {
+            .Int => |intType| {
+                const expectedBytes = (intType.bits + 7) / 8;
+                var buf: [expectedBytes]u8 = undefined;
+                var read = try file.read(&buf);
+                if (read != expectedBytes) {
+                    return error.ZipFileTooShort;
+                }
+                var val: std.meta.Int(intType.signedness, intType.bits) = 0;
+                for (buf) |b| {
+                    val <<= 8;
+                    val += b;
+                }
+                @field(result, field.name) = val;
+            },
+            .Pointer => |pointerType| {
+                if (pointerType.size != .Slice or pointerType.child != u8) {
+                    @compileError("only slice pointers are supported");
+                }
+                var fieldLengthName = field.name ++ "Length";
+                var length = @field(result, fieldLengthName);
+                var slice = try alloc.alloc(u8, length);
+                errdefer alloc.free(slice);
+                var read = try file.read(&slice);
+                if (read != slice.len) {
+                    return error.ZipFileTooShort;
+                }
+                @field(result, field.name) = slice;
+                @compileError(fieldLengthName); 
+            },
+            else => {}
+        }
+    }
+    // const t: std.builtin.TypeInfo;
+}
+
+fn readBytes(file: *std.fs.File, expectedRead: usize, dest: *[]u8, alloc: std.mem.Allocator) !void {
+    var buf = try alloc.alloc(u8, expectedRead);
     errdefer alloc.free(buf);
 
     var read = try file.read(buf);
-    if (read != toRead) {
+    if (read != expectedRead) {
         return error.ReadTooShort;
     }
 

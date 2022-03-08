@@ -1,9 +1,6 @@
 const std = @import("std");
 
 pub fn inflate(deflated: []const u8, alloc: std.mem.Allocator) ![]u8 {
-    if (copyLengthExtraBits.len != copyLengthMinimums.len)
-        @compileError("mismatch number of items in each array");
-
     var result = std.ArrayList(u8).init(alloc);
     defer result.deinit();
 
@@ -20,82 +17,31 @@ pub fn inflate(deflated: []const u8, alloc: std.mem.Allocator) ![]u8 {
                 bitGetter.skipToByteBoundary();
                 var len = bitGetter.array(16);
                 var nLen = bitGetter.array(16);
+                // TODO - finish impl
                 std.debug.print("{d} {d}\n", .{ len, nLen });
             },
             .Static => {
-                inner: while (true) {
+                while (true) {
                     var huffman = bitGetter.array(7);
                     var i: u9 = arrayToInt(7, huffman, .MSB);
                     if (i <= 0b0010111) { // 256-279
-                        var val = i - 0b0000000 + 256;
+                        var val = i + 256;
                         if (val == 256) {
-                            break :inner;
+                            break;
                         }
-
-                        var copyLengthExtraBit = copyLengthExtraBits[val - 257];
-                        var copyLength = copyLengthMinimums[val - 257];
-                        var add: u8 = 0;
-                        var place: u3 = 0;
-                        while (copyLengthExtraBit > 0) : (copyLengthExtraBit -= 1) {
-                            add |= @as(u8, bitGetter.next()) << place;
-                            place += 1;
-                        }
-                        copyLengthExtraBit += add;
-
-                        var fromIndexArray = bitGetter.array(5);
-                        var fromIndex: usize = arrayToInt(5, fromIndexArray, .MSB);
-
-                        var copyIndexExtraBit = copyFromExtraBits[fromIndex];
-                        var copyIndexLength: u32 = copyFromLengthMinimums[fromIndex];
-                        add = 0;
-                        while (copyIndexExtraBit > 0) : (copyIndexExtraBit -= 1) {
-                            add |= @as(u8, bitGetter.next()) << place;
-                            place += 1;
-                        }
-                        copyIndexLength += add;
-
-                        try result.ensureUnusedCapacity(copyLength);
-                        var start = result.items.len - copyIndexLength + 1;
-                        result.appendSlice(result.items[start..start + copyLength]) catch unreachable;
-
+                        try appendRepeatedString(val, &bitGetter, &result);
                         continue;
                     }
                     i = (i << 1) + bitGetter.next();
                     if (i <= 0b10111111) { // 0 - 143
-                        var val = i - 0b00110000 + 0;
+                        var val = i - 0b00110000;
                         try result.append(@truncate(u8, val));
                         continue;
                     }
                     i = (i << 1) + bitGetter.next();
                     if (i <= 0b11000111) { // 280 - 287
                         var val = i - 0b11000000 + 280;
-
-                        var copyLengthExtraBit = copyLengthExtraBits[val - 257];
-                        var copyLength = copyLengthMinimums[val - 257];
-                        var add: u8 = 0;
-                        var place: u3 = 0;
-                        while (copyLengthExtraBit > 0) : (copyLengthExtraBit -= 1) {
-                            add |= @as(u8, bitGetter.next()) << place;
-                            place += 1;
-                        }
-                        copyLengthExtraBit += add;
-
-                        var fromIndexArray = bitGetter.array(5);
-                        var fromIndex: usize = arrayToInt(5, fromIndexArray, .MSB);
-
-                        var copyIndexExtraBit = copyFromExtraBits[fromIndex];
-                        var copyIndexLength: u32 = copyFromLengthMinimums[fromIndex];
-                        add = 0;
-                        while (copyIndexExtraBit > 0) : (copyIndexExtraBit -= 1) {
-                            add |= @as(u8, bitGetter.next()) << place;
-                            place += 1;
-                        }
-                        copyIndexLength += add;
-
-                        try result.ensureUnusedCapacity(copyLength);
-                        var start = result.items.len - copyIndexLength + 1;
-                        result.appendSlice(result.items[start..start + copyLength]) catch unreachable;
-
+                        try appendRepeatedString(val, &bitGetter, &result);
                         continue;
                     } else { // 144 - 255
                         var val = i - 0b110010000 + 144;
@@ -105,16 +51,43 @@ pub fn inflate(deflated: []const u8, alloc: std.mem.Allocator) ![]u8 {
                 }
             },
             .Dynamic => {
-
+                // TODO - finish impl
             },
-            else => {},
         }
 
-        if (header.final)
+        if (header.final) {
             break;
+        }
     }
 
     return result.toOwnedSlice();
+}
+
+fn appendRepeatedString(val: u9, bitGetter: *BitGetter, result: *std.ArrayList(u8)) !void {
+    var copyLengthExtraBit = copyLengthExtraBits[val - 257];
+    var copyLength = copyLengthMinimums[val - 257];
+    var add: u8 = 0;
+    var place: u3 = 0;
+    while (copyLengthExtraBit > 0) : (copyLengthExtraBit -= 1) {
+        add |= @as(u8, bitGetter.next()) << place;
+        place += 1;
+    }
+    copyLengthExtraBit += add;
+
+    var fromIndex: usize = arrayToInt(5, bitGetter.array(5), .MSB);
+
+    var copyIndexExtraBit = copyFromExtraBits[fromIndex];
+    var copyIndexLength: u32 = copyFromLengthMinimums[fromIndex];
+    add = 0;
+    while (copyIndexExtraBit > 0) : (copyIndexExtraBit -= 1) {
+        add |= @as(u8, bitGetter.next()) << place;
+        place += 1;
+    }
+    copyIndexLength += add;
+
+    try result.ensureUnusedCapacity(copyLength);
+    var start = result.items.len - copyIndexLength + 1;
+    result.appendSlice(result.items[start .. start + copyLength]) catch unreachable;
 }
 
 const Header = struct {
@@ -122,7 +95,10 @@ const Header = struct {
     block: Block,
 
     fn new(source: [3]u1) !Header {
-        return Header{ .final = source[0] == 1, .block = try Block.from(source[1..].*) };
+        return Header{
+            .final = source[0] == 1,
+            .block = try Block.from(source[1..].*),
+        };
     }
 };
 
@@ -132,7 +108,7 @@ const Block = enum {
     Dynamic,
 
     fn from(source: [2]u1) !Block {
-        var block: u2 = (@as(u2, source[1]) << 1) + source[0];
+        var block: u2 = arrayToInt(2, source, .LSB);
         return switch (block) {
             0b00 => .Stored,
             0b01 => .Static,
@@ -184,18 +160,21 @@ const BitGetter = struct {
 
 fn arrayToInt(comptime size: u16, arr: [size]u1, comptime ordering: Ordering) std.meta.Int(.unsigned, size) {
     var result: std.meta.Int(.unsigned, size) = 0;
-    if (ordering == .MSB) {
-        for (arr) |a| {
-            result <<= 1;
-            result += a;
-        }
-    } else {
-        var i: usize = arr.len;
-        while (i > 0) {
-            i -= 1;
-            result <<= 1;
-            result += arr[i];
-        }
+    switch (ordering) {
+        .MSB => {
+            for (arr) |a| {
+                result <<= 1;
+                result += a;
+            }
+        },
+        .LSB => {
+            var i: usize = arr.len;
+            while (i > 0) {
+                i -= 1;
+                result <<= 1;
+                result += arr[i];
+            }
+        },
     }
 
     return result;
@@ -203,29 +182,29 @@ fn arrayToInt(comptime size: u16, arr: [size]u1, comptime ordering: Ordering) st
 
 const Ordering = enum {
     MSB,
-    LSB
+    LSB,
 };
 
 const copyLengthExtraBits = [_]u8{
     0, 0, 0, 0, 0, 0, 0, 0, 1, 1,
-    1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 
+    1, 1, 2, 2, 2, 2, 3, 3, 3, 3,
     4, 4, 4, 4, 5, 5, 5, 5, 0,
 };
 
 const copyLengthMinimums = [_]u16{
-    3, 4, 5, 6, 7, 8, 9, 10, 11, 13,
-    15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 
+    3,  4,  5,  6,   7,   8,   9,   10,  11,  13,
+    15, 17, 19, 23,  27,  31,  35,  43,  51,  59,
     67, 83, 99, 115, 131, 163, 195, 227, 258,
 };
 
-const copyFromExtraBits = [_]u8 {
-    0, 0, 0, 0, 1, 1, 2, 2, 3, 3,
-    4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 
+const copyFromExtraBits = [_]u8{
+    0, 0, 0,  0,  1,  1,  2,  2,  3,  3,
+    4, 4, 5,  5,  6,  6,  7,  7,  8,  8,
     9, 9, 10, 10, 11, 11, 12, 12, 13, 13,
 };
 
-const copyFromLengthMinimums = [_]u16 { 
-    3, 4, 5, 6, 7, 8, 9, 10, 11, 13,
-    15, 17, 19, 23, 27, 31, 35, 43, 51, 59,
+const copyFromLengthMinimums = [_]u16{
+    3,  4,  5,  6,   7,   8,   9,   10,  11,  13,
+    15, 17, 19, 23,  27,  31,  35,  43,  51,  59,
     67, 83, 99, 115, 131, 163, 195, 227, 258,
 };

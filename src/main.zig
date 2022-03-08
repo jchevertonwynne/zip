@@ -8,14 +8,22 @@ pub fn main() anyerror!void {
     defer std.debug.assert(!gpa.deinit());
     var alloc = gpa.allocator();
 
-    var file = try std.fs.cwd().openFile("out.zip", .{});
+    var args = std.process.args();
+    _ = args.skip();
+    var zipFileNameOpt = try args.next(alloc);
+
+    if (zipFileNameOpt == null) {
+        std.debug.print("please provide a zip file\n", .{});
+        std.os.exit(1);
+    }
+    var zipFileName = zipFileNameOpt.?;
+    defer alloc.free(zipFileName);
+
+    std.debug.print("reading from file {s}\n", .{zipFileName});
+
+    var file = try std.fs.cwd().openFile(zipFileName, .{});
     var zipFile = try ZipFile.new(&file, alloc);
     defer zipFile.deinit(alloc);
-
-    // std.debug.print("{s}\n", .{zipFile.endOfCentralDirectoryRecord});
-    // for (zipFile.centralDirectoryFileHeaders) |c| {
-    //     std.debug.print("name = \"{s}\"\ncomment = \"{s}\"\n{s}\n\n", .{ c.fileName, c.fileComment, c });
-    // }
 
     try zipFile.loadFiles(&file, alloc);
 
@@ -26,16 +34,12 @@ pub fn main() anyerror!void {
         switch (decompressed) {
             .Decompressed => |*d| {
                 std.debug.print("{s}\n", .{d.*});
+                std.debug.print("{} == {} ? {}\n", .{f.header.crc32, crc32(d.*), f.header.crc32 == crc32(d.*)});
                 alloc.free(d.*);
             },
-            else => {}
+            else => {},
         }
 
         std.debug.print("\n", .{});
     }
-
-    // try file.seekFromEnd(-22);
-    // var buf: [22]u8 = undefined;
-    // var read = try file.read(&buf);
-    // std.debug.print("{} {d}\n", .{read, buf});
 }
