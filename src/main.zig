@@ -34,7 +34,7 @@ pub fn main() anyerror!void {
         switch (decompressed) {
             .Decompressed => |*d| {
                 std.debug.print("{s}\n", .{d.*});
-                std.debug.print("{} == {} ? {}\n", .{f.header.crc32, crc32(d.*), f.header.crc32 == crc32(d.*)});
+                std.debug.print("{} == {} ? {}\n", .{ f.header.crc32, crc32(d.*), f.header.crc32 == crc32(d.*) });
                 alloc.free(d.*);
             },
             else => {},

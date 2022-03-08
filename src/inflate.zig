@@ -64,29 +64,31 @@ pub fn inflate(deflated: []const u8, alloc: std.mem.Allocator) ![]u8 {
 }
 
 fn appendRepeatedString(val: u9, bitGetter: *BitGetter, result: *std.ArrayList(u8)) !void {
-    var copyLengthExtraBit = copyLengthExtraBits[val - 257];
-    var copyLength = copyLengthMinimums[val - 257];
-    var add: u8 = 0;
-    var place: u3 = 0;
-    while (copyLengthExtraBit > 0) : (copyLengthExtraBit -= 1) {
-        add |= @as(u8, bitGetter.next()) << place;
+    var copyLengthInfo = copyLengths[val - 257];
+    var copyLengthExtraBits = copyLengthInfo.extraBits;
+    var copyLength = copyLengthInfo.lengthMinimum;
+    var add: u16 = 0;
+    var place: u4 = 0;
+    while (copyLengthExtraBits > 0) : (copyLengthExtraBits -= 1) {
+        add |= @as(u16, bitGetter.next()) << place;
         place += 1;
     }
-    copyLengthExtraBit += add;
+    copyLengthExtraBits += add;
 
     var fromIndex: usize = arrayToInt(5, bitGetter.array(5), .MSB);
 
-    var copyIndexExtraBit = copyFromExtraBits[fromIndex];
-    var copyIndexLength: u32 = copyFromLengthMinimums[fromIndex];
+    var copyDistanceInfo = copyDistances[fromIndex];
+    var copyDistanceExtraBits = copyDistanceInfo.extraBits;
+    var copyDistance: u32 = copyDistanceInfo.distanceMinimum;
     add = 0;
-    while (copyIndexExtraBit > 0) : (copyIndexExtraBit -= 1) {
-        add |= @as(u8, bitGetter.next()) << place;
+    while (copyDistanceExtraBits > 0) : (copyDistanceExtraBits -= 1) {
+        add |= @as(u16, bitGetter.next()) << place;
         place += 1;
     }
-    copyIndexLength += add;
+    copyDistance += add;
 
     try result.ensureUnusedCapacity(copyLength);
-    var start = result.items.len - copyIndexLength + 1;
+    var start = result.items.len - copyDistance;
     result.appendSlice(result.items[start .. start + copyLength]) catch unreachable;
 }
 
@@ -136,8 +138,9 @@ const BitGetter = struct {
     }
 
     fn skipToByteBoundary(this: *@This()) void {
-        while (this.bit != 0)
+        while (this.bit != 0) {
             _ = this.next();
+        }
     }
 
     fn next(this: *@This()) u1 {
@@ -152,8 +155,9 @@ const BitGetter = struct {
 
     fn array(this: *@This(), comptime size: usize) [size]u1 {
         var result: [size]u1 = undefined;
-        for (result) |*r|
+        for (result) |*r| {
             r.* = this.next();
+        }
         return result;
     }
 };
@@ -185,26 +189,81 @@ const Ordering = enum {
     LSB,
 };
 
-const copyLengthExtraBits = [_]u8{
-    0, 0, 0, 0, 0, 0, 0, 0, 1, 1,
-    1, 1, 2, 2, 2, 2, 3, 3, 3, 3,
-    4, 4, 4, 4, 5, 5, 5, 5, 0,
+const LengthRow = struct {
+    extraBits: u16,
+    lengthMinimum: u16,
 };
 
-const copyLengthMinimums = [_]u16{
-    3,  4,  5,  6,   7,   8,   9,   10,  11,  13,
-    15, 17, 19, 23,  27,  31,  35,  43,  51,  59,
-    67, 83, 99, 115, 131, 163, 195, 227, 258,
+const DistRow = struct {
+    extraBits: u16,
+    distanceMinimum: u16,
 };
 
-const copyFromExtraBits = [_]u8{
-    0, 0, 0,  0,  1,  1,  2,  2,  3,  3,
-    4, 4, 5,  5,  6,  6,  7,  7,  8,  8,
-    9, 9, 10, 10, 11, 11, 12, 12, 13, 13,
+const copyLengths = [29]LengthRow{
+    .{ .extraBits = 0, .lengthMinimum = 3 },
+    .{ .extraBits = 0, .lengthMinimum = 4 },
+    .{ .extraBits = 0, .lengthMinimum = 5 },
+    .{ .extraBits = 0, .lengthMinimum = 6 },
+    .{ .extraBits = 0, .lengthMinimum = 7 },
+    .{ .extraBits = 0, .lengthMinimum = 8 },
+    .{ .extraBits = 0, .lengthMinimum = 9 },
+    .{ .extraBits = 0, .lengthMinimum = 10 },
+    .{ .extraBits = 1, .lengthMinimum = 11 },
+    .{ .extraBits = 1, .lengthMinimum = 13 },
+
+    .{ .extraBits = 1, .lengthMinimum = 15 },
+    .{ .extraBits = 1, .lengthMinimum = 17 },
+    .{ .extraBits = 2, .lengthMinimum = 19 },
+    .{ .extraBits = 2, .lengthMinimum = 23 },
+    .{ .extraBits = 2, .lengthMinimum = 27 },
+    .{ .extraBits = 2, .lengthMinimum = 31 },
+    .{ .extraBits = 3, .lengthMinimum = 35 },
+    .{ .extraBits = 3, .lengthMinimum = 43 },
+    .{ .extraBits = 3, .lengthMinimum = 51 },
+    .{ .extraBits = 3, .lengthMinimum = 59 },
+
+    .{ .extraBits = 4, .lengthMinimum = 67 },
+    .{ .extraBits = 4, .lengthMinimum = 83 },
+    .{ .extraBits = 4, .lengthMinimum = 99 },
+    .{ .extraBits = 4, .lengthMinimum = 115 },
+    .{ .extraBits = 5, .lengthMinimum = 131 },
+    .{ .extraBits = 5, .lengthMinimum = 163 },
+    .{ .extraBits = 5, .lengthMinimum = 195 },
+    .{ .extraBits = 5, .lengthMinimum = 227 },
+    .{ .extraBits = 0, .lengthMinimum = 258 },
 };
 
-const copyFromLengthMinimums = [_]u16{
-    3,  4,  5,  6,   7,   8,   9,   10,  11,  13,
-    15, 17, 19, 23,  27,  31,  35,  43,  51,  59,
-    67, 83, 99, 115, 131, 163, 195, 227, 258,
+const copyDistances = [30]DistRow{
+    .{ .extraBits = 0, .distanceMinimum = 1 },
+    .{ .extraBits = 0, .distanceMinimum = 2 },
+    .{ .extraBits = 0, .distanceMinimum = 3 },
+    .{ .extraBits = 0, .distanceMinimum = 4 },
+    .{ .extraBits = 1, .distanceMinimum = 5 },
+    .{ .extraBits = 1, .distanceMinimum = 7 },
+    .{ .extraBits = 2, .distanceMinimum = 9 },
+    .{ .extraBits = 2, .distanceMinimum = 13 },
+    .{ .extraBits = 3, .distanceMinimum = 17 },
+    .{ .extraBits = 3, .distanceMinimum = 25 },
+
+    .{ .extraBits = 4, .distanceMinimum = 33 },
+    .{ .extraBits = 4, .distanceMinimum = 49 },
+    .{ .extraBits = 5, .distanceMinimum = 65 },
+    .{ .extraBits = 5, .distanceMinimum = 97 },
+    .{ .extraBits = 6, .distanceMinimum = 129 },
+    .{ .extraBits = 6, .distanceMinimum = 193 },
+    .{ .extraBits = 7, .distanceMinimum = 257 },
+    .{ .extraBits = 7, .distanceMinimum = 385 },
+    .{ .extraBits = 8, .distanceMinimum = 513 },
+    .{ .extraBits = 8, .distanceMinimum = 769 },
+
+    .{ .extraBits = 9, .distanceMinimum = 1025 },
+    .{ .extraBits = 9, .distanceMinimum = 1537 },
+    .{ .extraBits = 10, .distanceMinimum = 2049 },
+    .{ .extraBits = 10, .distanceMinimum = 3073 },
+    .{ .extraBits = 11, .distanceMinimum = 4097 },
+    .{ .extraBits = 11, .distanceMinimum = 6145 },
+    .{ .extraBits = 12, .distanceMinimum = 8193 },
+    .{ .extraBits = 12, .distanceMinimum = 12289 },
+    .{ .extraBits = 13, .distanceMinimum = 16385 },
+    .{ .extraBits = 13, .distanceMinimum = 24577 },
 };
