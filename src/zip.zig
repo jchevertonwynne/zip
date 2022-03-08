@@ -146,7 +146,7 @@ const LocalFileHeader = struct {
     extraField: []u8,
 
     fn new(file: *std.fs.File, alloc: std.mem.Allocator, comptime checkHeader: bool) !LocalFileHeader {
-        var header: ?[4]u8 = if (checkHeader) expectedHeaders.fileEntry else null;
+        const header: ?[4]u8 = if (checkHeader) expectedHeaders.fileEntry else null;
         return fillObject(@This(), file, alloc, header);
     }
 
@@ -179,7 +179,7 @@ const CentralDirectoryFileHeader = struct {
     fileComment: []u8,
 
     fn new(file: *std.fs.File, alloc: std.mem.Allocator, comptime checkHeader: bool) !CentralDirectoryFileHeader {
-        var header: ?[4]u8 = if (checkHeader) expectedHeaders.centralRespositoryFile else null;
+        const header: ?[4]u8 = if (checkHeader) expectedHeaders.centralRespositoryFile else null;
         return fillObject(@This(), file, alloc, header);
     }
 
@@ -202,7 +202,7 @@ const EndOfCentralDirectoryRecord = struct {
     comment: []u8,
 
     fn new(file: *std.fs.File, alloc: std.mem.Allocator, comptime checkHeader: bool) !EndOfCentralDirectoryRecord {
-        var header: ?[4]u8 = if (checkHeader) expectedHeaders.endOfCentralDirectoryRecord else null;
+        const header: ?[4]u8 = if (checkHeader) expectedHeaders.endOfCentralDirectoryRecord else null;
         return fillObject(@This(), file, alloc, header);
     }
 
@@ -213,16 +213,23 @@ const EndOfCentralDirectoryRecord = struct {
 };
 
 fn fillObject(comptime T: type, file: *std.fs.File, alloc: std.mem.Allocator, comptime header: ?[4]u8) !T {
-    // TODO - work out how to do cleanup
+    @setEvalBranchQuota(100_000);
+    const fieldCount = @typeInfo(T).Struct.fields.len;
+    var result: T = undefined;
 
-    // var allocatedSlices = std.BoundedArray(usize, @typeInfo(T).Struct.fields.len).init(0) catch unreachable;
-    // errdefer {
-    //     for (allocatedSlices.slice()) |fieldIndex| {
-    //         std.debug.print("error for field {}`n", .{fieldIndex});
-    //         var slice = @field(result, @typeInfo(T).Struct.fields[fieldIndex]);
-    //         alloc.free(slice);
-    //     }
-    // }
+    var cleanup: [fieldCount]bool = .{false} ** fieldCount;
+
+    errdefer { // bit horrible but probably works
+        inline for (@typeInfo(T).Struct.fields) |field, fieldIndex| {
+            if (cleanup[fieldIndex]) {
+                if (@typeInfo(field.field_type) == .Pointer) {
+                    alloc.free(@field(result, field.name));
+                } else {
+                    @panic("error for field '" ++ field.name ++ "': should never be set to true for cleanup as not a pointer type");
+                }
+            }
+        }
+    }
 
     if (header) |h| {
         var buf: [4]u8 = undefined;
@@ -235,12 +242,13 @@ fn fillObject(comptime T: type, file: *std.fs.File, alloc: std.mem.Allocator, co
         }
     }
 
-    var result: T = undefined;
-    
-    inline for (@typeInfo(T).Struct.fields) |field| {
+    inline for (@typeInfo(T).Struct.fields) |field, fieldIndex| {
         switch (@typeInfo(field.field_type)) {
             .Int => |intType| {
-                const expectedBytes = (intType.bits + 7) / 8;
+                if (intType.bits % 8 != 0) {
+                    @compileError("error for field '" ++ field.name ++ "': only full byte integer sizes are supported");
+                }
+                const expectedBytes = intType.bits / 8;
                 var buf: [expectedBytes]u8 = undefined;
                 var read = try file.read(&buf);
                 if (read != expectedBytes) {
@@ -257,7 +265,7 @@ fn fillObject(comptime T: type, file: *std.fs.File, alloc: std.mem.Allocator, co
             },
             .Pointer => |pointerType| {
                 if (pointerType.size != .Slice or pointerType.child != u8) {
-                    @compileError("only support pointer is []u8");
+                    @compileError("error with field '" ++ field.name ++ "': only support pointer is []u8");
                 }
                 const fieldLengthName = field.name ++ "Length";
                 var length = @field(result, fieldLengthName);
@@ -268,7 +276,7 @@ fn fillObject(comptime T: type, file: *std.fs.File, alloc: std.mem.Allocator, co
                     return error.ZipFileTooShort;
                 }
                 @field(result, field.name) = slice;
-                // allocatedSlices.append(fieldIndex) catch unreachable;
+                cleanup[fieldIndex] = true;
             },
             else => @compileError("unsupported field type: " ++ field.name),
         }
