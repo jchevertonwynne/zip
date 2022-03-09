@@ -19,7 +19,7 @@ pub const ZipFile = struct {
         if (read != buf.len) {
             return error.ZipFileTooShort;
         }
-        while (!std.mem.eql(u8, &buf, &expectedHeaders.endOfCentralDirectoryRecord)) {
+        while (!std.meta.eql(buf, expectedHeaders.endOfCentralDirectoryRecord)) {
             try file.seekBy(-5);
             read = try file.read(&buf);
             if (read != buf.len) {
@@ -96,7 +96,7 @@ const FileEntry = struct {
     header: LocalFileHeader,
     contents: []u8,
 
-    fn new(file: *std.fs.File, alloc: std.mem.Allocator, comptime checkHeader: bool) !FileEntry {
+    fn new(file: *std.fs.File, alloc: std.mem.Allocator, comptime checkHeader: bool) !@This() {
         var header = try LocalFileHeader.new(file, alloc, checkHeader);
         errdefer header.deinit(alloc);
 
@@ -108,7 +108,7 @@ const FileEntry = struct {
             return error.ZipFileTooShort;
         }
 
-        return FileEntry{ .header = header, .contents = contents };
+        return @This(){ .header = header, .contents = contents };
     }
 
     pub fn decompressed(this: @This(), alloc: std.mem.Allocator) !DecompressionResult {
@@ -145,7 +145,7 @@ const LocalFileHeader = struct {
     fileName: []u8,
     extraField: []u8,
 
-    fn new(file: *std.fs.File, alloc: std.mem.Allocator, comptime checkHeader: bool) !LocalFileHeader {
+    fn new(file: *std.fs.File, alloc: std.mem.Allocator, comptime checkHeader: bool) !@This() {
         const header: ?[4]u8 = if (checkHeader) expectedHeaders.fileEntry else null;
         return fillObject(@This(), file, alloc, header);
     }
@@ -178,7 +178,7 @@ const CentralDirectoryFileHeader = struct {
     extraField: []u8,
     fileComment: []u8,
 
-    fn new(file: *std.fs.File, alloc: std.mem.Allocator, comptime checkHeader: bool) !CentralDirectoryFileHeader {
+    fn new(file: *std.fs.File, alloc: std.mem.Allocator, comptime checkHeader: bool) !@This() {
         const header: ?[4]u8 = if (checkHeader) expectedHeaders.centralRespositoryFile else null;
         return fillObject(@This(), file, alloc, header);
     }
@@ -201,7 +201,7 @@ const EndOfCentralDirectoryRecord = struct {
     commentLength: u16,
     comment: []u8,
 
-    fn new(file: *std.fs.File, alloc: std.mem.Allocator, comptime checkHeader: bool) !EndOfCentralDirectoryRecord {
+    fn new(file: *std.fs.File, alloc: std.mem.Allocator, comptime checkHeader: bool) !@This() {
         const header: ?[4]u8 = if (checkHeader) expectedHeaders.endOfCentralDirectoryRecord else null;
         return fillObject(@This(), file, alloc, header);
     }
@@ -224,9 +224,7 @@ fn fillObject(comptime T: type, file: *std.fs.File, alloc: std.mem.Allocator, co
             if (cleanup[fieldIndex]) {
                 if (@typeInfo(field.field_type) == .Pointer) {
                     alloc.free(@field(result, field.name));
-                } else {
-                    @panic("error for field '" ++ field.name ++ "': should never be set to true for cleanup as not a pointer type");
-                }
+                } else unreachable;
             }
         }
     }
@@ -237,7 +235,7 @@ fn fillObject(comptime T: type, file: *std.fs.File, alloc: std.mem.Allocator, co
         if (read != buf.len) {
             return error.ZipFileTooShort;
         }
-        if (!std.mem.eql(u8, &buf, &h)) {
+        if (!std.meta.eql(buf, h)) {
             return error.ZipFileIncorrectHeader;
         }
     }

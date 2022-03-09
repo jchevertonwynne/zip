@@ -15,10 +15,16 @@ pub fn inflate(deflated: []const u8, alloc: std.mem.Allocator) ![]u8 {
         switch (header.block) {
             .Stored => {
                 bitGetter.skipToByteBoundary();
-                var len = bitGetter.array(16);
-                var nLen = bitGetter.array(16);
-                // TODO - finish impl
-                std.debug.print("{d} {d}\n", .{ len, nLen });
+                var len = arrayToInt(16, bitGetter.array(16), .MSB);
+                var nLen = arrayToInt(16, bitGetter.array(16), .MSB);
+                if (len != ~nLen) {
+                    return error.ZipFileLenMismatch;
+                }
+                try result.ensureUnusedCapacity(len);
+                while (len > 0) {
+                    len -= 1;
+                    result.append(bitGetter.byte()) catch unreachable;
+                }
             },
             .Static => {
                 while (true) {
@@ -51,6 +57,45 @@ pub fn inflate(deflated: []const u8, alloc: std.mem.Allocator) ![]u8 {
                 }
             },
             .Dynamic => {
+                var hlit = @as(u16, arrayToInt(5, bitGetter.array(5), .MSB)) + 257;
+                var hdist =  @as(u16, arrayToInt(5, bitGetter.array(5), .MSB)) + 1;
+                var hclen =  @as(u16, arrayToInt(4, bitGetter.array(4), .MSB)) + 4;
+                std.debug.print("{} {} {}\n", .{hlit, hdist, hclen});
+
+                const indexOrdering = [19]u8 { 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 };
+                var lengths = std.mem.zeroes([19]u3);
+                var index: usize = 0;
+                while (hclen > 0) : (index += 1) {
+                    hclen -= 1;
+                    lengths[indexOrdering[index]] = arrayToInt(3, bitGetter.array(3), .MSB);
+                }
+
+                // lengths = .{ 3, 3, 3, 3, 3, 2, 4, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
+                var blCount = std.mem.zeroes([8]u16);
+                for (lengths) |l| {
+                    blCount[l] += 1;
+                }
+
+                blCount[0] = 0;
+                var nextCode = std.mem.zeroes([8]u64);
+                var code: u64 = 0;
+                var bits: usize = 1;
+                while (bits <= 7) : (bits += 1) {
+                    code = (code + blCount[bits - 1]) << 1;
+                    nextCode[bits] = code;
+                }
+
+                var codeValues = std.mem.zeroes([19]u64);
+                for (codeValues) |*c, i| {
+                    var len = lengths[i];
+                    if (len != 0) {
+                        c.* = nextCode[len];
+                        nextCode[len] += 1;
+                    }
+                }
+                std.debug.print("lengths = {d}\nblCount = {d}\nnext =    {d}\ncode values = {b}\n", .{lengths, blCount, nextCode, codeValues});
+
                 // TODO - finish impl
             },
         }
@@ -121,12 +166,14 @@ const Block = enum {
 };
 
 const BitGetter = struct {
+    curr: u8,
     source: []const u8,
     index: usize,
     bit: usize,
 
     fn new(source: []const u8) @This() {
         return .{
+            .curr = source[0],
             .source = source,
             .index = 0,
             .bit = 0,
@@ -143,12 +190,23 @@ const BitGetter = struct {
         }
     }
 
+    fn byte(this: *@This()) u8 {
+        if (this.bit != 0) {
+            @panic("only call Bitgetter.byte() when on a byte boundary");
+        }
+        var result = this.curr;
+        this.index += 1;
+        this.curr = this.source[this.index];
+        return result;
+    }
+
     fn next(this: *@This()) u1 {
-        var bit = @boolToInt((this.source[this.index] & (@as(u8, 1) << @truncate(u3, this.bit))) != 0);
+        var bit = @boolToInt((this.curr & (@as(u8, 1) << @truncate(u3, this.bit))) != 0);
         this.bit += 1;
         if (this.bit == 8) {
             this.bit = 0;
             this.index += 1;
+            this.curr = this.source[this.index];
         }
         return bit;
     }
