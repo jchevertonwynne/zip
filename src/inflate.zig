@@ -58,11 +58,11 @@ pub fn inflate(deflated: []const u8, alloc: std.mem.Allocator) ![]u8 {
             },
             .Dynamic => {
                 var hlit = @as(u16, arrayToInt(5, bitGetter.array(5), .MSB)) + 257;
-                var hdist =  @as(u16, arrayToInt(5, bitGetter.array(5), .MSB)) + 1;
-                var hclen =  @as(u16, arrayToInt(4, bitGetter.array(4), .MSB)) + 4;
-                std.debug.print("{} {} {}\n", .{hlit, hdist, hclen});
+                var hdist = @as(u16, arrayToInt(5, bitGetter.array(5), .MSB)) + 1;
+                var hclen = @as(u16, arrayToInt(4, bitGetter.array(4), .MSB)) + 4;
+                std.debug.print("{} {} {}\n", .{ hlit, hdist, hclen });
 
-                const indexOrdering = [19]u8 { 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 };
+                const indexOrdering = [19]u8{ 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 };
                 var lengths = std.mem.zeroes([19]u3);
                 var index: usize = 0;
                 while (hclen > 0) : (index += 1) {
@@ -94,7 +94,7 @@ pub fn inflate(deflated: []const u8, alloc: std.mem.Allocator) ![]u8 {
                         nextCode[len] += 1;
                     }
                 }
-                std.debug.print("lengths = {d}\nblCount = {d}\nnext =    {d}\ncode values = {b}\n", .{lengths, blCount, nextCode, codeValues});
+                std.debug.print("lengths = {d}\nblCount = {d}\nnext =    {d}\ncode values = {b}\n", .{ lengths, blCount, nextCode, codeValues });
 
                 // TODO - finish impl
             },

@@ -212,6 +212,18 @@ const EndOfCentralDirectoryRecord = struct {
     }
 };
 
+fn readSize(comptime T: type) usize {
+    var size: usize = 0;
+
+    for (@typeInfo(T).Struct.fields) |field| {
+        if (@typeInfo(field.field_type) == .Int) {
+            size += @sizeOf(field.field_type);
+        }
+    }
+
+    return size;
+}
+
 fn fillObject(comptime T: type, file: *std.fs.File, alloc: std.mem.Allocator, comptime header: ?[4]u8) !T {
     @setEvalBranchQuota(100_000);
     const fieldCount = @typeInfo(T).Struct.fields.len;
@@ -229,16 +241,22 @@ fn fillObject(comptime T: type, file: *std.fs.File, alloc: std.mem.Allocator, co
         }
     }
 
-    if (header) |h| {
-        var buf: [4]u8 = undefined;
+    const size = comptime readSize(T);
+    var buf: [size + if (header != null) 4 else 0]u8 = undefined;
+    {
         var read = try file.read(&buf);
         if (read != buf.len) {
             return error.ZipFileTooShort;
         }
-        if (!std.meta.eql(buf, h)) {
+    }
+
+    if (header) |h| {
+        if (!std.meta.eql(buf[0..4].*, h)) {
             return error.ZipFileIncorrectHeader;
         }
     }
+
+    var ind: usize = if (header != null) 4 else 0;
 
     inline for (@typeInfo(T).Struct.fields) |field, fieldIndex| {
         switch (@typeInfo(field.field_type)) {
@@ -246,20 +264,16 @@ fn fillObject(comptime T: type, file: *std.fs.File, alloc: std.mem.Allocator, co
                 if (intType.bits % 8 != 0) {
                     @compileError("error for field '" ++ field.name ++ "': only full byte integer sizes are supported");
                 }
-                const expectedBytes = intType.bits / 8;
-                var buf: [expectedBytes]u8 = undefined;
-                var read = try file.read(&buf);
-                if (read != expectedBytes) {
-                    return error.ZipFileTooShort;
-                }
+                var intBuf: []u8 = buf[ind .. ind + @sizeOf(field.field_type)];
                 var val: std.meta.Int(intType.signedness, intType.bits) = 0;
-                var ind = buf.len;
-                while (ind > 0) {
-                    ind -= 1;
+                var intInd = intBuf.len;
+                while (intInd > 0) {
+                    intInd -= 1;
                     val <<= 8;
-                    val += buf[ind];
+                    val += intBuf[intInd];
                 }
                 @field(result, field.name) = val;
+                ind += @sizeOf(field.field_type);
             },
             .Pointer => |pointerType| {
                 if (pointerType.size != .Slice or pointerType.child != u8) {
@@ -269,9 +283,11 @@ fn fillObject(comptime T: type, file: *std.fs.File, alloc: std.mem.Allocator, co
                 var length = @field(result, fieldLengthName);
                 var slice = try alloc.alloc(u8, length);
                 errdefer alloc.free(slice);
-                var read = try file.read(slice);
-                if (read != slice.len) {
-                    return error.ZipFileTooShort;
+                {
+                    var read = try file.read(slice);
+                    if (read != slice.len) {
+                        return error.ZipFileTooShort;
+                    }
                 }
                 @field(result, field.name) = slice;
                 cleanup[fieldIndex] = true;
