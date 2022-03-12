@@ -114,7 +114,7 @@ const FileEntry = struct {
     pub fn decompressed(this: @This(), alloc: std.mem.Allocator) !DecompressionResult {
         return switch (this.header.compressionMethod) {
             0 => DecompressionResult{ .Already = this.contents },
-            8 => DecompressionResult{ .Decompressed = try inflate.inflate(this.contents, alloc) },
+            8 => DecompressionResult{ .Decompressed = try inflate.inflate(this.contents, this.header.uncompressedSize, alloc) },
             else => return error.DeflateMethodUnsupported,
         };
     }
@@ -212,7 +212,7 @@ const EndOfCentralDirectoryRecord = struct {
     }
 };
 
-fn readSize(comptime T: type) usize {
+fn intFieldSize(comptime T: type) usize {
     var size: usize = 0;
 
     for (@typeInfo(T).Struct.fields) |field| {
@@ -241,8 +241,8 @@ fn fillObject(comptime T: type, file: *std.fs.File, alloc: std.mem.Allocator, co
         }
     }
 
-    const size = comptime readSize(T);
-    var buf: [size + if (header != null) 4 else 0]u8 = undefined;
+    const headerOffset = if (header != null) 4 else 0;
+    var buf: [intFieldSize(T) + headerOffset]u8 = undefined;
     {
         var read = try file.read(&buf);
         if (read != buf.len) {
@@ -256,7 +256,7 @@ fn fillObject(comptime T: type, file: *std.fs.File, alloc: std.mem.Allocator, co
         }
     }
 
-    var ind: usize = if (header != null) 4 else 0;
+    var ind: usize = headerOffset;
 
     inline for (@typeInfo(T).Struct.fields) |field, fieldIndex| {
         switch (@typeInfo(field.field_type)) {
