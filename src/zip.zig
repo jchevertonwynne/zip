@@ -111,10 +111,10 @@ const FileEntry = struct {
         return @This(){ .header = header, .contents = contents };
     }
 
-    pub fn decompressed(this: @This(), alloc: std.mem.Allocator) !DecompressionResult {
+    pub fn decompressed(this: @This(), useC: bool, alloc: std.mem.Allocator) !DecompressionResult {
         return switch (this.header.compressionMethod) {
             0 => DecompressionResult{ .Already = this.contents },
-            8 => DecompressionResult{ .Decompressed = try inflate.inflate(this.contents, this.header.uncompressedSize, alloc) },
+            8 => DecompressionResult{ .Decompressed = try inflate.inflate(this.contents, this.header.uncompressedSize, useC, alloc) },
             else => return error.DeflateMethodUnsupported,
         };
     }

@@ -19,6 +19,8 @@ pub fn main() anyerror!void {
     var zipFileName = zipFileNameOpt.?;
     defer alloc.free(zipFileName);
 
+    var useC = try args.next(alloc);
+
     std.debug.print("reading from file {s}\n", .{zipFileName});
 
     var file = try std.fs.cwd().openFile(zipFileName, .{});
@@ -28,18 +30,22 @@ pub fn main() anyerror!void {
     try zipFile.loadFiles(&file, alloc);
 
     for (zipFile.fileEntries.?) |f| {
-        std.debug.print("file name = {s}\ncompressed size = {}\n", .{ f.header.fileName, f.contents.len });
+        std.debug.print("file name = {s}\ncompressed size = {}\nuncompressed size = {}\n", .{ f.header.fileName, f.contents.len, f.header.uncompressedSize });
 
-        var decompressed = try f.decompressed(alloc);
+        var decompressed = try f.decompressed(useC != null, alloc);
         switch (decompressed) {
             .Decompressed => |*d| {
-                std.debug.print("{s}\n", .{d.*});
-                std.debug.print("{} == {} ? {}\n", .{ f.header.crc32, crc32(d.*), f.header.crc32 == crc32(d.*) });
+                // std.debug.print("{s}\n", .{d.*});
+                std.debug.print("{x} == {x} ? {}\n", .{ f.header.crc32, crc32(d.*), f.header.crc32 == crc32(d.*) });
                 alloc.free(d.*);
             },
             else => {},
         }
 
         std.debug.print("\n", .{});
+    }
+
+    if (useC) |c| {
+        alloc.free(c);
     }
 }

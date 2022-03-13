@@ -1,6 +1,28 @@
 const std = @import("std");
+const zlib = @import("zlib.zig");
 
-pub fn inflate(deflated: []const u8, uncompressedSize: usize, alloc: std.mem.Allocator) ![]u8 {
+pub fn inflate(deflated: []const u8, uncompressedSize: usize, useC: bool, alloc: std.mem.Allocator) ![]u8 {
+    if (useC) {
+        return inC(deflated, uncompressedSize, alloc);
+    } else {
+        return inZig(deflated, uncompressedSize, alloc);
+    }
+}
+
+fn inC(deflated: []const u8, uncompressedSize: usize, alloc: std.mem.Allocator) ![]u8 {
+    var result = try alloc.alloc(u8, uncompressedSize);
+    errdefer alloc.free(result);
+
+    var inflationStatus = zlib.puff(result.ptr, &@truncate(c_ulong, result.len), deflated.ptr, &@truncate(c_ulong, deflated.len));
+
+    if (inflationStatus != 0) {
+        return error.ZlibInflationError;
+    }
+
+    return result;
+}
+
+fn inZig(deflated: []const u8, uncompressedSize: usize, alloc: std.mem.Allocator) ![]u8 {
     var result = std.ArrayList(u8).init(alloc);
     defer result.deinit();
     try result.ensureTotalCapacity(uncompressedSize);
@@ -8,10 +30,7 @@ pub fn inflate(deflated: []const u8, uncompressedSize: usize, alloc: std.mem.All
     var bitGetter = BitGetter.new(deflated);
 
     while (true) {
-        std.debug.print("{b}\n", .{bitGetter.source[bitGetter.index]});
         var header = try Header.new(try bitGetter.array(3));
-
-        std.debug.print("{}\n", .{header});
 
         switch (header.block) {
             .Stored => try inflateStoredBlock(&bitGetter, &result),
@@ -74,16 +93,15 @@ fn inflateStaticHuffman(bitGetter: *BitGetter, result: *std.ArrayList(u8)) !void
 
 // reference: https://github.com/madler/zlib/blob/master/contrib/puff/puff.c#L665
 fn inflateDynamicHuffman(bitGetter: *BitGetter, result: *std.ArrayList(u8)) !void {
-    var hlit = @as(u16, arrayToInt(try bitGetter.array(5), .MSB)) + 257;
-    var hdist = @as(u16, arrayToInt(try bitGetter.array(5), .MSB)) + 1;
-    var hclen = @as(u16, arrayToInt(try bitGetter.array(4), .MSB)) + 4;
-    std.debug.print("hlit = {}\nhdist = {}\nhclen = {}\n", .{ hlit, hdist, hclen });
+    var hlit = @as(u16, arrayToInt(try bitGetter.array(5), .LSB)) + 257;
+    var hdist = @as(u16, arrayToInt(try bitGetter.array(5), .LSB)) + 1;
+    var hclen = @as(u16, arrayToInt(try bitGetter.array(4), .LSB)) + 4;
 
     const indexOrdering = [19]u8{ 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 };
     var lengths: [286 + 30]u64 = undefined;
     var index: usize = 0;
     while (index < hclen) : (index += 1) {
-        lengths[indexOrdering[index]] = arrayToInt(try bitGetter.array(3), .MSB);
+        lengths[indexOrdering[index]] = arrayToInt(try bitGetter.array(3), .LSB);
     }
     while (index < 19) : (index += 1) {
         lengths[indexOrdering[index]] = 0;
@@ -96,7 +114,6 @@ fn inflateDynamicHuffman(bitGetter: *BitGetter, result: *std.ArrayList(u8)) !voi
     index = 0;
     while (index < hlit + hdist) {
         var symbol: u64 = try decode(bitGetter, dynamicHuffman1);
-        std.debug.print("symbol = {}\n", .{symbol});
         if (symbol < 16) {
             lengths[index] = symbol;
             index += 1;
@@ -104,11 +121,11 @@ fn inflateDynamicHuffman(bitGetter: *BitGetter, result: *std.ArrayList(u8)) !voi
             var len: usize = 0;
             if (symbol == 16) {
                 len = lengths[index - 1];
-                symbol = 3 + @as(u64, arrayToInt(try bitGetter.array(2), .MSB));
+                symbol = 3 + @as(u64, arrayToInt(try bitGetter.array(2), .LSB));
             } else if (symbol == 17) {
-                symbol = 3 + @as(u64, arrayToInt(try bitGetter.array(3), .MSB));
+                symbol = 3 + @as(u64, arrayToInt(try bitGetter.array(3), .LSB));
             } else {
-                symbol = 11 + @as(u64, arrayToInt(try bitGetter.array(7), .MSB));
+                symbol = 11 + @as(u64, arrayToInt(try bitGetter.array(7), .LSB));
             }
             while (symbol > 0) {
                 symbol -= 1;
@@ -118,12 +135,21 @@ fn inflateDynamicHuffman(bitGetter: *BitGetter, result: *std.ArrayList(u8)) !voi
         }
     }
 
-    std.debug.print("made it to here woohoo\n", .{});
+    // for (lengths) |l|
+    //     std.debug.print("{}\n", .{l});
 
     var lenHuffman = DynamicHuffman.new(&lenCounts, &lenSymbols, lengths[0..hlit]);
     var distCounts: [16]u8 = undefined; // maxbits + 1
     var distSymbols: [30]u8 = undefined; // maxlcodes
     var distHuffman = DynamicHuffman.new(&distCounts, &distSymbols, lengths[hlit .. hlit + hdist]);
+
+    // for (distHuffman.counts) |c| 
+    //     std.debug.print("{}\n", .{c});
+
+
+    // std.debug.print("\n", .{});
+    // for (distHuffman.symbols) |s| 
+    //     std.debug.print("{}\n", .{s});
 
     return try codes(bitGetter, lenHuffman, distHuffman, result);
 }
@@ -140,17 +166,16 @@ fn codes(bitGetter: *BitGetter, lenHuffman: DynamicHuffman, distHuffman: Dynamic
             break;
         } else if (symbol < 256) {
             try result.append(@truncate(u8, symbol));
-            std.debug.print("{c}\n", .{@truncate(u8, symbol)});
         } else {
             symbol -= 257;
 
             var len: usize = lengths[symbol];
             var add: usize = 0;
             var lenExtra = lengthExtras[symbol];
-            while (lenExtra > 0) {
+            var ind: u6 = 0;
+            while (lenExtra > 0) : (ind += 1) {
                 lenExtra -= 1;
-                add <<= 1;
-                add += try bitGetter.next();
+                add += @as(usize, try bitGetter.next()) << ind;
             }
             len += add;
 
@@ -158,17 +183,16 @@ fn codes(bitGetter: *BitGetter, lenHuffman: DynamicHuffman, distHuffman: Dynamic
             var dist: usize = distances[symbol];
             var extra = distanceExtras[symbol];
             add = 0;
-            while (extra > 0) {
+            ind = 0;
+            while (extra > 0) : (ind += 1) {
                 extra -= 1;
-                add <<= 1;
-                add += try bitGetter.next();
+                add += @as(usize, try bitGetter.next()) << ind;
             }
             dist += add;
 
             try result.ensureUnusedCapacity(len);
             var start = result.items.len - dist;
             result.appendSlice(result.items[start .. start + dist]) catch unreachable;
-            std.debug.print("{s}\n", .{result.items[start .. start + dist]});
         }
     }
 }
@@ -214,6 +238,12 @@ const DynamicHuffman = struct {
         while (len < 15) : (len += 1) {
             offsets[len + 1] = offsets[len] + result.counts[len];
         }
+
+        var stdout = std.io.getStdOut();
+        var writer = stdout.writer();
+        writer.print("lengths = \n", .{}) catch unreachable;
+        for (lengths) |o|
+            writer.print("{}\n", .{o}) catch unreachable;
 
         for (lengths) |length, i| {
             if (length != 0) {
