@@ -107,13 +107,13 @@ fn inflateDynamicHuffman(bitGetter: *BitGetter, result: *std.ArrayList(u8)) !voi
         lengths[indexOrdering[index]] = 0;
     }
 
-    var lenCounts: [16]u8 = undefined; // maxbits + 1
-    var lenSymbols: [286]u8 = undefined; // maxlcodes
+    var lenCounts: [16]u16 = undefined; // maxbits + 1
+    var lenSymbols: [286]u16 = undefined; // maxlcodes
     var dynamicHuffman1 = DynamicHuffman.new(&lenCounts, &lenSymbols, lengths[0..19]);
 
     index = 0;
     while (index < hlit + hdist) {
-        var symbol: u64 = try decode(bitGetter, dynamicHuffman1);
+        var symbol = try decode(bitGetter, dynamicHuffman1);
         if (symbol < 16) {
             lengths[index] = symbol;
             index += 1;
@@ -135,21 +135,11 @@ fn inflateDynamicHuffman(bitGetter: *BitGetter, result: *std.ArrayList(u8)) !voi
         }
     }
 
-    // for (lengths) |l|
-    //     std.debug.print("{}\n", .{l});
-
     var lenHuffman = DynamicHuffman.new(&lenCounts, &lenSymbols, lengths[0..hlit]);
-    var distCounts: [16]u8 = undefined; // maxbits + 1
-    var distSymbols: [30]u8 = undefined; // maxlcodes
+
+    var distCounts: [16]u16 = undefined; // maxbits + 1
+    var distSymbols: [30]u16 = undefined; // maxlcodes
     var distHuffman = DynamicHuffman.new(&distCounts, &distSymbols, lengths[hlit .. hlit + hdist]);
-
-    // for (distHuffman.counts) |c| 
-    //     std.debug.print("{}\n", .{c});
-
-
-    // std.debug.print("\n", .{});
-    // for (distHuffman.symbols) |s| 
-    //     std.debug.print("{}\n", .{s});
 
     return try codes(bitGetter, lenHuffman, distHuffman, result);
 }
@@ -191,8 +181,11 @@ fn codes(bitGetter: *BitGetter, lenHuffman: DynamicHuffman, distHuffman: Dynamic
             dist += add;
 
             try result.ensureUnusedCapacity(len);
-            var start = result.items.len - dist;
-            result.appendSlice(result.items[start .. start + dist]) catch unreachable;
+            var curr = result.items.len - dist;
+            var end = curr + len;
+            while (curr < end) : (curr += 1) {
+                result.append(result.items[curr]) catch unreachable;
+            }
         }
     }
 }
@@ -219,10 +212,10 @@ fn decode(bitGetter: *BitGetter, huffman: DynamicHuffman) !u64 {
 }
 
 const DynamicHuffman = struct {
-    counts: []u8,
-    symbols: []u8,
+    counts: []u16,
+    symbols: []u16,
 
-    fn new(counts: []u8, symbols: []u8, lengths: []u64) DynamicHuffman {
+    fn new(counts: []u16, symbols: []u16, lengths: []u64) DynamicHuffman {
         var result = DynamicHuffman{ .counts = counts, .symbols = symbols };
 
         for (result.counts) |*c| {
@@ -239,15 +232,9 @@ const DynamicHuffman = struct {
             offsets[len + 1] = offsets[len] + result.counts[len];
         }
 
-        var stdout = std.io.getStdOut();
-        var writer = stdout.writer();
-        writer.print("lengths = \n", .{}) catch unreachable;
-        for (lengths) |o|
-            writer.print("{}\n", .{o}) catch unreachable;
-
         for (lengths) |length, i| {
             if (length != 0) {
-                result.symbols[offsets[length]] = @truncate(u8, i);
+                result.symbols[offsets[length]] = @truncate(u16, i);
                 offsets[length] += 1;
             }
         }
@@ -281,8 +268,11 @@ fn appendRepeatedString(val: u9, bitGetter: *BitGetter, result: *std.ArrayList(u
     copyDistance += add;
 
     try result.ensureUnusedCapacity(copyLength);
-    var start = result.items.len - copyDistance;
-    result.appendSlice(result.items[start .. start + copyLength]) catch unreachable;
+    var curr = result.items.len - copyDistance;
+    var end = curr + copyLength;
+    while (curr < end) : (curr += 1) {
+        result.append(result.items[curr]) catch unreachable;
+    }
 }
 
 const Header = struct {
