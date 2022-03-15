@@ -95,39 +95,6 @@ fn inflateStaticHuffman(bitGetter: *BitGetter, result: *std.ArrayList(u8)) !void
     try codes(bitGetter, huffmanTables.lenTable, huffmanTables.distTable, result);
 }
 
-fn appendRepeatedString(val: u10, bitGetter: *BitGetter, result: *std.ArrayList(u8)) !void {
-    var copyLengthInfo = copyLengths[val - 257];
-    var copyLengthExtraBits = copyLengthInfo.extraBits;
-    var copyLength = copyLengthInfo.lengthMinimum;
-    var add: u16 = 0;
-    var place: u4 = 0;
-    while (copyLengthExtraBits > 0) : (copyLengthExtraBits -= 1) {
-        add |= @as(u16, try bitGetter.next()) << place;
-        place += 1;
-    }
-    copyLength += add;
-
-    var fromIndex: usize = arrayToInt(try bitGetter.array(5), .MSB);
-
-    var copyDistanceInfo = copyDistances[fromIndex];
-    var copyDistanceExtraBits = copyDistanceInfo.extraBits;
-    var copyDistance: u32 = copyDistanceInfo.distanceMinimum;
-    add = 0;
-    place = 0;
-    while (copyDistanceExtraBits > 0) : (copyDistanceExtraBits -= 1) {
-        add |= @as(u16, try bitGetter.next()) << place;
-        place += 1;
-    }
-    copyDistance += add;
-
-    try result.ensureUnusedCapacity(copyLength);
-    var curr = result.items.len - copyDistance;
-    var end = curr + copyLength;
-    while (curr < end) : (curr += 1) {
-        result.append(result.items[curr]) catch unreachable;
-    }
-}
-
 // reference: https://github.com/madler/zlib/blob/master/contrib/puff/puff.c#L665
 fn inflateDynamicHuffman(bitGetter: *BitGetter, result: *std.ArrayList(u8)) !void {
     var hlit = @as(u16, arrayToInt(try bitGetter.array(5), .LSB)) + 257;
@@ -158,11 +125,11 @@ fn inflateDynamicHuffman(bitGetter: *BitGetter, result: *std.ArrayList(u8)) !voi
             var len: usize = 0;
             if (symbol == 16) {
                 len = lengths[index - 1];
-                symbol = 3 + @as(u64, arrayToInt(try bitGetter.array(2), .LSB));
+                symbol = 3 + @as(u16, arrayToInt(try bitGetter.array(2), .LSB));
             } else if (symbol == 17) {
-                symbol = 3 + @as(u64, arrayToInt(try bitGetter.array(3), .LSB));
+                symbol = 3 + @as(u16, arrayToInt(try bitGetter.array(3), .LSB));
             } else {
-                symbol = 11 + @as(u64, arrayToInt(try bitGetter.array(7), .LSB));
+                symbol = 11 + @as(u16, arrayToInt(try bitGetter.array(7), .LSB));
             }
             while (symbol > 0) {
                 symbol -= 1;
@@ -182,10 +149,26 @@ fn inflateDynamicHuffman(bitGetter: *BitGetter, result: *std.ArrayList(u8)) !voi
 }
 
 fn codes(bitGetter: *BitGetter, lenHuffman: DynamicHuffman, distHuffman: DynamicHuffman, result: *std.ArrayList(u8)) !void {
-    const lengths: [29]u64 = .{ 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258 };
-    const lengthExtras: [29]u64 = .{ 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0 };
-    const distances: [30]u64 = .{ 1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577 };
-    const distanceExtras: [30]u64 = .{ 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13 };
+    const lengths: [29]u64 = .{
+        3,  4,  5,  6,   7,   8,   9,   10,  11,  13,
+        15, 17, 19, 23,  27,  31,  35,  43,  51,  59,
+        67, 83, 99, 115, 131, 163, 195, 227, 258,
+    };
+    const lengthExtras: [29]u64 = .{
+        0, 0, 0, 0, 0, 0, 0, 0, 1, 1,
+        1, 1, 2, 2, 2, 2, 3, 3, 3, 3,
+        4, 4, 4, 4, 5, 5, 5, 5, 0,
+    };
+    const distances: [30]u64 = .{
+        1,    2,    3,    4,    5,    7,    9,    13,    17,    25,
+        33,   49,   65,   97,   129,  193,  257,  385,   513,   769,
+        1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
+    };
+    const distanceExtras: [30]u64 = .{
+        0, 0, 0,  0,  1,  1,  2,  2,  3,  3,
+        4, 4, 5,  5,  6,  6,  7,  7,  8,  8,
+        9, 9, 10, 10, 11, 11, 12, 12, 13, 13,
+    };
 
     while (true) {
         var symbol = try decode(bitGetter, lenHuffman);
@@ -227,7 +210,7 @@ fn codes(bitGetter: *BitGetter, lenHuffman: DynamicHuffman, distHuffman: Dynamic
     }
 }
 
-fn decode(bitGetter: *BitGetter, huffman: DynamicHuffman) !u64 {
+fn decode(bitGetter: *BitGetter, huffman: DynamicHuffman) !u16 {
     var code: u64 = 0;
     var first: u64 = 0;
     var index: u64 = 0;
@@ -393,73 +376,4 @@ fn arrayToInt(arr: anytype, comptime ordering: Ordering) std.meta.Int(.unsigned,
 const Ordering = enum {
     MSB,
     LSB,
-};
-
-const copyLengths = [29]struct { extraBits: u16, lengthMinimum: u16 }{
-    .{ .extraBits = 0, .lengthMinimum = 3 },
-    .{ .extraBits = 0, .lengthMinimum = 4 },
-    .{ .extraBits = 0, .lengthMinimum = 5 },
-    .{ .extraBits = 0, .lengthMinimum = 6 },
-    .{ .extraBits = 0, .lengthMinimum = 7 },
-    .{ .extraBits = 0, .lengthMinimum = 8 },
-    .{ .extraBits = 0, .lengthMinimum = 9 },
-    .{ .extraBits = 0, .lengthMinimum = 10 },
-    .{ .extraBits = 1, .lengthMinimum = 11 },
-    .{ .extraBits = 1, .lengthMinimum = 13 },
-
-    .{ .extraBits = 1, .lengthMinimum = 15 },
-    .{ .extraBits = 1, .lengthMinimum = 17 },
-    .{ .extraBits = 2, .lengthMinimum = 19 },
-    .{ .extraBits = 2, .lengthMinimum = 23 },
-    .{ .extraBits = 2, .lengthMinimum = 27 },
-    .{ .extraBits = 2, .lengthMinimum = 31 },
-    .{ .extraBits = 3, .lengthMinimum = 35 },
-    .{ .extraBits = 3, .lengthMinimum = 43 },
-    .{ .extraBits = 3, .lengthMinimum = 51 },
-    .{ .extraBits = 3, .lengthMinimum = 59 },
-
-    .{ .extraBits = 4, .lengthMinimum = 67 },
-    .{ .extraBits = 4, .lengthMinimum = 83 },
-    .{ .extraBits = 4, .lengthMinimum = 99 },
-    .{ .extraBits = 4, .lengthMinimum = 115 },
-    .{ .extraBits = 5, .lengthMinimum = 131 },
-    .{ .extraBits = 5, .lengthMinimum = 163 },
-    .{ .extraBits = 5, .lengthMinimum = 195 },
-    .{ .extraBits = 5, .lengthMinimum = 227 },
-    .{ .extraBits = 0, .lengthMinimum = 258 },
-};
-
-const copyDistances = [30]struct { extraBits: u16, distanceMinimum: u16 }{
-    .{ .extraBits = 0, .distanceMinimum = 1 },
-    .{ .extraBits = 0, .distanceMinimum = 2 },
-    .{ .extraBits = 0, .distanceMinimum = 3 },
-    .{ .extraBits = 0, .distanceMinimum = 4 },
-    .{ .extraBits = 1, .distanceMinimum = 5 },
-    .{ .extraBits = 1, .distanceMinimum = 7 },
-    .{ .extraBits = 2, .distanceMinimum = 9 },
-    .{ .extraBits = 2, .distanceMinimum = 13 },
-    .{ .extraBits = 3, .distanceMinimum = 17 },
-    .{ .extraBits = 3, .distanceMinimum = 25 },
-
-    .{ .extraBits = 4, .distanceMinimum = 33 },
-    .{ .extraBits = 4, .distanceMinimum = 49 },
-    .{ .extraBits = 5, .distanceMinimum = 65 },
-    .{ .extraBits = 5, .distanceMinimum = 97 },
-    .{ .extraBits = 6, .distanceMinimum = 129 },
-    .{ .extraBits = 6, .distanceMinimum = 193 },
-    .{ .extraBits = 7, .distanceMinimum = 257 },
-    .{ .extraBits = 7, .distanceMinimum = 385 },
-    .{ .extraBits = 8, .distanceMinimum = 513 },
-    .{ .extraBits = 8, .distanceMinimum = 769 },
-
-    .{ .extraBits = 9, .distanceMinimum = 1025 },
-    .{ .extraBits = 9, .distanceMinimum = 1537 },
-    .{ .extraBits = 10, .distanceMinimum = 2049 },
-    .{ .extraBits = 10, .distanceMinimum = 3073 },
-    .{ .extraBits = 11, .distanceMinimum = 4097 },
-    .{ .extraBits = 11, .distanceMinimum = 6145 },
-    .{ .extraBits = 12, .distanceMinimum = 8193 },
-    .{ .extraBits = 12, .distanceMinimum = 12289 },
-    .{ .extraBits = 13, .distanceMinimum = 16385 },
-    .{ .extraBits = 13, .distanceMinimum = 24577 },
 };
