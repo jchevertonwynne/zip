@@ -30,19 +30,18 @@ pub fn main() anyerror!void {
     try zipFile.loadFiles(&file, alloc);
 
     for (zipFile.fileEntries.?) |f| {
-        std.debug.print("file name = {s}\ncompressed size = {}\nuncompressed size = {}\n", .{ f.header.fileName, f.contents.len, f.header.uncompressedSize });
+        std.debug.print("file name = {s}\n", .{f.header.fileName});
 
         var decompressed = try f.decompressed(useC != null, alloc);
         switch (decompressed) {
             .Decompressed => |*d| {
-                // std.debug.print("{s}\n", .{d.*});
-                std.debug.print("{x} == {x} ? {}\n", .{ f.header.crc32, crc32(d.*), f.header.crc32 == crc32(d.*) });
+                var expectedCrc32 = f.header.crc32;
+                var computedCrc32 = crc32(d.*);
+                std.debug.assert(expectedCrc32 == computedCrc32);
                 alloc.free(d.*);
             },
             else => {},
         }
-
-        std.debug.print("\n", .{});
     }
 
     if (useC) |c| {

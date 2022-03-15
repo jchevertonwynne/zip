@@ -61,33 +61,70 @@ fn inflateStoredBlock(bitGetter: *BitGetter, result: *std.ArrayList(u8)) !void {
 }
 
 fn inflateStaticHuffman(bitGetter: *BitGetter, result: *std.ArrayList(u8)) !void {
-    while (true) {
-        var huffman = try bitGetter.array(7);
-        var i: u9 = arrayToInt(huffman, .MSB);
-        if (i <= 0b0010111) { // 256-279
-            var val = i + 256;
-            if (val == 256) {
-                break;
-            }
-            try appendRepeatedString(val, bitGetter, result);
-            continue;
-        }
-        i = (i << 1) + try bitGetter.next();
-        if (i <= 0b10111111) { // 0 - 143
-            var val = i - 0b00110000;
-            try result.append(@truncate(u8, val));
-            continue;
-        }
-        i = (i << 1) + try bitGetter.next();
-        if (i <= 0b11000111) { // 280 - 287
-            var val = i - 0b11000000 + 280;
-            try appendRepeatedString(val, bitGetter, result);
-            continue;
-        } else { // 144 - 255
-            var val = i - 0b110010000 + 144;
-            try result.append(@truncate(u8, val));
-            continue;
-        }
+    const huffmanTables = comptime blk: {
+        @setEvalBranchQuota(100000);
+        var lengths: [288]u64 = undefined;
+        var symbol: usize = 0;
+        while (symbol < 144) : (symbol += 1)
+            lengths[symbol] = 8;
+        while (symbol < 256) : (symbol += 1)
+            lengths[symbol] = 9;
+        while (symbol < 280) : (symbol += 1)
+            lengths[symbol] = 7;
+        while (symbol < 288) : (symbol += 1)
+            lengths[symbol] = 8;
+
+        var lenCount: [16]u16 = undefined;
+        var lenSymbol: [288]u16 = undefined;
+        var lenTable = DynamicHuffman.new(&lenCount, &lenSymbol, &lengths);
+
+        symbol = 0;
+        while (symbol < 30) : (symbol += 1)
+            lengths[symbol] = 5;
+
+        var distCount: [16]u16 = undefined;
+        var distSymbol: [30]u16 = undefined;
+        var distTable = DynamicHuffman.new(&distCount, &distSymbol, lengths[0..30]);
+
+        var tables: struct {
+            lenTable: DynamicHuffman = lenTable,
+            distTable: DynamicHuffman = distTable,
+        } = .{};
+        break :blk tables;
+    };
+    try codes(bitGetter, huffmanTables.lenTable, huffmanTables.distTable, result);
+}
+
+fn appendRepeatedString(val: u10, bitGetter: *BitGetter, result: *std.ArrayList(u8)) !void {
+    var copyLengthInfo = copyLengths[val - 257];
+    var copyLengthExtraBits = copyLengthInfo.extraBits;
+    var copyLength = copyLengthInfo.lengthMinimum;
+    var add: u16 = 0;
+    var place: u4 = 0;
+    while (copyLengthExtraBits > 0) : (copyLengthExtraBits -= 1) {
+        add |= @as(u16, try bitGetter.next()) << place;
+        place += 1;
+    }
+    copyLength += add;
+
+    var fromIndex: usize = arrayToInt(try bitGetter.array(5), .MSB);
+
+    var copyDistanceInfo = copyDistances[fromIndex];
+    var copyDistanceExtraBits = copyDistanceInfo.extraBits;
+    var copyDistance: u32 = copyDistanceInfo.distanceMinimum;
+    add = 0;
+    place = 0;
+    while (copyDistanceExtraBits > 0) : (copyDistanceExtraBits -= 1) {
+        add |= @as(u16, try bitGetter.next()) << place;
+        place += 1;
+    }
+    copyDistance += add;
+
+    try result.ensureUnusedCapacity(copyLength);
+    var curr = result.items.len - copyDistance;
+    var end = curr + copyLength;
+    while (curr < end) : (curr += 1) {
+        result.append(result.items[curr]) catch unreachable;
     }
 }
 
@@ -242,38 +279,6 @@ const DynamicHuffman = struct {
         return result;
     }
 };
-
-fn appendRepeatedString(val: u9, bitGetter: *BitGetter, result: *std.ArrayList(u8)) !void {
-    var copyLengthInfo = copyLengths[val - 257];
-    var copyLengthExtraBits = copyLengthInfo.extraBits;
-    var copyLength = copyLengthInfo.lengthMinimum;
-    var add: u16 = 0;
-    var place: u4 = 0;
-    while (copyLengthExtraBits > 0) : (copyLengthExtraBits -= 1) {
-        add |= @as(u16, try bitGetter.next()) << place;
-        place += 1;
-    }
-    copyLengthExtraBits += add;
-
-    var fromIndex: usize = arrayToInt(try bitGetter.array(5), .MSB);
-
-    var copyDistanceInfo = copyDistances[fromIndex];
-    var copyDistanceExtraBits = copyDistanceInfo.extraBits;
-    var copyDistance: u32 = copyDistanceInfo.distanceMinimum;
-    add = 0;
-    while (copyDistanceExtraBits > 0) : (copyDistanceExtraBits -= 1) {
-        add |= @as(u16, try bitGetter.next()) << place;
-        place += 1;
-    }
-    copyDistance += add;
-
-    try result.ensureUnusedCapacity(copyLength);
-    var curr = result.items.len - copyDistance;
-    var end = curr + copyLength;
-    while (curr < end) : (curr += 1) {
-        result.append(result.items[curr]) catch unreachable;
-    }
-}
 
 const Header = struct {
     final: bool,
