@@ -53,10 +53,9 @@ fn inflateStoredBlock(bitGetter: *BitGetter, result: *std.ArrayList(u8)) !void {
     if (len != ~nLen) {
         return error.ZipFileLenMismatch;
     }
-    try result.ensureUnusedCapacity(len);
     while (len > 0) {
         len -= 1;
-        result.append(try bitGetter.byte()) catch unreachable;
+        result.appendAssumeCapacity(try bitGetter.byte());
     }
 }
 
@@ -200,11 +199,10 @@ fn codes(bitGetter: *BitGetter, lenHuffman: DynamicHuffman, distHuffman: Dynamic
             }
             dist += add;
 
-            try result.ensureUnusedCapacity(len);
             var curr = result.items.len - dist;
             var end = curr + len;
             while (curr < end) : (curr += 1) {
-                result.append(result.items[curr]) catch unreachable;
+                result.appendAssumeCapacity(result.items[curr]);
             }
         }
     }
