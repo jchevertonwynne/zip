@@ -72,7 +72,7 @@ pub const ZipFile = struct {
         this.* = undefined;
     }
 
-    pub fn loadFiles(this: *@This(), file: *std.fs.File, alloc: std.mem.Allocator) !void {
+    pub fn loadFiles(this: *@This(), file: *std.fs.File, alloc: std.mem.Allocator) ![]FileEntry {
         var files = std.ArrayList(FileEntry).init(alloc);
         errdefer {
             for (files.items) |*f| {
@@ -88,7 +88,9 @@ pub const ZipFile = struct {
             try files.append(fileEntry);
         }
 
-        this.fileEntries = files.toOwnedSlice();
+        var result = files.toOwnedSlice();
+        this.fileEntries = result;
+        return result;
     }
 };
 

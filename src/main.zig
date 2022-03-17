@@ -8,41 +8,15 @@ pub fn main() anyerror!void {
     defer std.debug.assert(!gpa.deinit());
     var alloc = gpa.allocator();
 
-    var args = try zigargs.parseForCurrentProcess(Args, alloc, .print);
-    defer args.deinit();
+    var parsedArgs = try zigargs.parseForCurrentProcess(Args, alloc, .print);
+    defer parsedArgs.deinit();
 
-    if (!args.options.valid()) {
+    if (!parsedArgs.options.valid()) {
         std.debug.print("invalid file provided\n", .{});
         std.os.exit(1);
     }
 
-    std.debug.print("reading from file {s}\n", .{args.options.file});
-
-    var file = try std.fs.cwd().openFile(args.options.file, .{});
-    var zipFile = try ZipFile.new(&file, alloc);
-    defer zipFile.deinit(alloc);
-
-    try zipFile.loadFiles(&file, alloc);
-
-    switch (args.options.mode) {
-        .unzip => {
-            for (zipFile.fileEntries.?) |f| {
-                std.debug.print("file name = {s}\n", .{f.header.fileName});
-
-                var decompressed = try f.decompressed(args.options.usec, alloc);
-                switch (decompressed) {
-                    .Decompressed => |d| {
-                        var expectedCrc32 = f.header.crc32;
-                        var computedCrc32 = crc32(d);
-                        std.debug.assert(expectedCrc32 == computedCrc32);
-                        alloc.free(d);
-                    },
-                    else => {},
-                }
-            }
-        },
-        .zip => unreachable,
-    }
+    try handleOperation(parsedArgs.options, alloc);
 }
 
 const Args = struct {
@@ -60,3 +34,62 @@ const Args = struct {
         return this.file.len > 0;
     }
 };
+
+fn handleOperation(args: Args, alloc: std.mem.Allocator) !void {
+    switch (args.mode) {
+        .unzip => try unzipZipFile(args, alloc),
+        .zip => {
+            std.debug.print("zip is currently unimplemented\n", .{});
+            return error.ZipFileZipUnimplemented;
+        },
+    }
+}
+
+fn unzipZipFile(args: Args, alloc: std.mem.Allocator) !void {
+    std.debug.print("reading from file {s}\n", .{args.file});
+
+    var file = try std.fs.cwd().openFile(args.file, .{});
+    var zipFile = try ZipFile.new(&file, alloc);
+    defer zipFile.deinit(alloc);
+
+    var outDir = std.fs.cwd();
+
+    for (try zipFile.loadFiles(&file, alloc)) |fileEntry| {
+        std.debug.print("processing {s}...\n", .{fileEntry.header.fileName});
+
+        var outFile = outDir.createFile(fileEntry.header.fileName, .{}) catch |err| {
+            if (err == error.IsDir) {
+                try outDir.makeDir(fileEntry.header.fileName);
+                continue;
+            }
+            return err;
+        };
+        defer outFile.close();
+
+        var mustFree = false;
+
+        var toWrite = switch (try fileEntry.decompressed(args.usec, alloc)) {
+            .Decompressed => |decompressed| blk: {
+                mustFree = true;
+                break :blk decompressed;
+            },
+            .Already => |alreadyDecompressed| alreadyDecompressed,
+        };
+        defer {
+            if (mustFree) {
+                alloc.free(toWrite);
+            }
+        }
+
+        if (fileEntry.header.crc32 != crc32(toWrite)) {
+            std.debug.print("crc32 check failed for file {s}\n", .{fileEntry.header.fileName});
+            return error.ZipFileCrc32Mismatch;
+        }
+
+        var written = try outFile.write(toWrite);
+        if (written != toWrite.len) {
+            std.debug.print("failed to fully write file {s}\n", .{fileEntry.header.fileName});
+            return error.ZipFileWriteTooShort;
+        }
+    }
+}
