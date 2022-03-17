@@ -12,6 +12,7 @@ pub fn build(b: *std.build.Builder) void {
     const mode = b.standardReleaseOptions();
 
     const exe = b.addExecutable("zip", "src/main.zig");
+    exe.addPackagePath("zigargs", "vendor/zig-args/args.zig");
     exe.addCSourceFile("src/zlib/puff.c", &[_][]const u8{});
     exe.linkLibC();
     exe.setTarget(target);
