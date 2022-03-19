@@ -11,33 +11,10 @@ pub fn main() anyerror!void {
     var parsedArgs = try zigargs.parseForCurrentProcess(Args, alloc, .print);
     defer parsedArgs.deinit();
 
-    if (!parsedArgs.options.valid()) {
-        std.debug.print("invalid file provided\n", .{});
-        std.os.exit(1);
-    }
+    try parsedArgs.options.valid();
 
-    try handleOperation(parsedArgs.options, alloc);
-}
-
-const Args = struct {
-    file: []const u8 = &[_]u8{},
-    mode: enum { zip, unzip } = .unzip,
-    usec: bool = false,
-
-    pub const shorthands = .{
-        .f = "file",
-        .m = "mode",
-        .c = "usec",
-    };
-
-    fn valid(this: @This()) bool {
-        return this.file.len > 0;
-    }
-};
-
-fn handleOperation(args: Args, alloc: std.mem.Allocator) !void {
-    switch (args.mode) {
-        .unzip => try unzipZipFile(args, alloc),
+    switch (parsedArgs.options.mode) {
+        .unzip => try unzipZipFile(parsedArgs.options, alloc),
         .zip => {
             std.debug.print("zip is currently unimplemented\n", .{});
             return error.ZipFileZipUnimplemented;
@@ -45,51 +22,65 @@ fn handleOperation(args: Args, alloc: std.mem.Allocator) !void {
     }
 }
 
+const Args = struct {
+    file: []const u8 = &[_]u8{},
+    outputdir: []const u8 = ".",
+    mode: enum { zip, unzip } = .unzip,
+    usec: bool = false,
+
+    pub const shorthands = .{
+        .f = "file",
+        .o = "outputdir",
+        .m = "mode",
+        .c = "usec",
+    };
+
+    fn valid(this: @This()) !void {
+        if (this.file.len == 0) {
+            return error.ArgsZipFileNameNotProvided;
+        }
+    }
+};
+
 fn unzipZipFile(args: Args, alloc: std.mem.Allocator) !void {
     std.debug.print("reading from file {s}\n", .{args.file});
 
     var file = try std.fs.cwd().openFile(args.file, .{});
+    defer file.close();
     var zipFile = try ZipFile.new(&file, alloc);
     defer zipFile.deinit(alloc);
 
-    var outDir = std.fs.cwd();
+    var h = try std.fs.cwd().realpathAlloc(alloc, ".");
+    defer alloc.free(h);
+    std.debug.print("base path: {s}\n", .{h});
+
+    var outDir = try std.fs.cwd().openDir(args.outputdir, .{});
+    defer outDir.close();
+
+    var path = try outDir.realpathAlloc(alloc, ".");
+    defer alloc.free(path);
+    std.debug.print("writing zip file contents to: {s}\n", .{path});
 
     for (try zipFile.loadFiles(&file, alloc)) |fileEntry| {
         std.debug.print("processing {s}...\n", .{fileEntry.header.fileName});
 
-        var outFile = outDir.createFile(fileEntry.header.fileName, .{}) catch |err| {
-            if (err == error.IsDir) {
-                try outDir.makeDir(fileEntry.header.fileName);
-                continue;
-            }
-            return err;
-        };
-        defer outFile.close();
-
-        var mustFree = false;
-
-        var toWrite = switch (try fileEntry.decompressed(args.usec, alloc)) {
-            .Decompressed => |decompressed| blk: {
-                mustFree = true;
-                break :blk decompressed;
-            },
-            .Already => |alreadyDecompressed| alreadyDecompressed,
-        };
-        defer {
-            if (mustFree) {
-                alloc.free(toWrite);
-            }
-        }
+        var decompressedEntry = try fileEntry.decompressed(args.usec, alloc);
+        defer decompressedEntry.deinit(alloc);
+        var toWrite = decompressedEntry.contents();
 
         if (fileEntry.header.crc32 != crc32(toWrite)) {
             std.debug.print("crc32 check failed for file {s}\n", .{fileEntry.header.fileName});
             return error.ZipFileCrc32Mismatch;
         }
 
-        var written = try outFile.write(toWrite);
-        if (written != toWrite.len) {
-            std.debug.print("failed to fully write file {s}\n", .{fileEntry.header.fileName});
-            return error.ZipFileWriteTooShort;
-        }
+        var writeFile = outDir.createFile(fileEntry.header.fileName, .{}) catch |err| {
+            if (err == error.IsDir) {
+                try outDir.makeDir(fileEntry.header.fileName);
+                continue;
+            }
+            return err;
+        };
+        defer writeFile.close();
+        try writeFile.writeAll(toWrite);
     }
 }

@@ -131,6 +131,20 @@ const FileEntry = struct {
 const DecompressionResult = union(enum) {
     Decompressed: []u8,
     Already: []u8,
+
+    pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
+        switch (this.*) {
+            .Decompressed => |d| alloc.free(d),
+            else => {},
+        }
+    }
+
+    pub fn contents(this: @This()) []u8 {
+        return switch (this) {
+            .Decompressed => |decompressed| decompressed,
+            .Already => |already| already,
+        };
+    }
 };
 
 const LocalFileHeader = struct {
