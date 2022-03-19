@@ -1,5 +1,6 @@
 const std = @import("std");
 const inflate = @import("inflate.zig");
+const crc32 = @import("crc32.zig").crc32;
 
 const expectedHeaders: struct {
     fileEntry: [4]u8 = .{ 80, 75, 3, 4 },
@@ -8,7 +9,7 @@ const expectedHeaders: struct {
 } = .{};
 
 pub const ZipFile = struct {
-    fileEntries: ?[]FileEntry,
+    fileEntries: []FileEntry,
     centralDirectoryFileHeaders: []CentralDirectoryFileHeader,
     endOfCentralDirectoryRecord: EndOfCentralDirectoryRecord,
 
@@ -46,8 +47,23 @@ pub const ZipFile = struct {
             try centralDirectoryFileHeaders.append(centralDirectoryFileHeader);
         }
 
+        var files = std.ArrayList(FileEntry).init(alloc);
+        errdefer {
+            for (files.items) |*f| {
+                f.deinit(alloc);
+            }
+            files.deinit();
+        }
+
+        for (centralDirectoryFileHeaders.items) |c| {
+            try file.seekTo(c.relativeOffsetOfLocalFileHeader);
+            var fileEntry = try FileEntry.new(file, alloc, true);
+            errdefer fileEntry.deinit(alloc);
+            try files.append(fileEntry);
+        }
+
         var result = ZipFile{
-            .fileEntries = null,
+            .fileEntries = files.toOwnedSlice(),
             .centralDirectoryFileHeaders = centralDirectoryFileHeaders.toOwnedSlice(),
             .endOfCentralDirectoryRecord = end,
         };
@@ -56,12 +72,10 @@ pub const ZipFile = struct {
     }
 
     pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
-        if (this.fileEntries) |*entries| {
-            for (entries.*) |*f| {
-                f.deinit(alloc);
-            }
-            alloc.free(entries.*);
+        for (this.fileEntries) |*f| {
+            f.deinit(alloc);
         }
+        alloc.free(this.fileEntries);
 
         for (this.centralDirectoryFileHeaders) |*c| {
             c.deinit(alloc);
@@ -72,25 +86,19 @@ pub const ZipFile = struct {
         this.* = undefined;
     }
 
-    pub fn loadFiles(this: *@This(), file: *std.fs.File, alloc: std.mem.Allocator) ![]FileEntry {
-        var files = std.ArrayList(FileEntry).init(alloc);
-        errdefer {
-            for (files.items) |*f| {
-                f.deinit(alloc);
+    pub fn decompress(this: @This(), outDir: std.fs.Dir, useC: bool, alloc: std.mem.Allocator) !void {
+        for (this.fileEntries) |fileEntry| {
+            var decompressedEntry = try fileEntry.decompressed(useC, alloc);
+            defer decompressedEntry.deinit(alloc);
+            var toWrite = decompressedEntry.contents();
+
+            if (std.mem.endsWith(u8, fileEntry.header.fileName, "/")) {
+                try outDir.makeDir(fileEntry.header.fileName);
+                continue;
             }
-            files.deinit();
-        }
 
-        for (this.centralDirectoryFileHeaders) |c| {
-            try file.seekTo(c.relativeOffsetOfLocalFileHeader);
-            var fileEntry = try FileEntry.new(file, alloc, true);
-            errdefer fileEntry.deinit(alloc);
-            try files.append(fileEntry);
+            try outDir.writeFile(fileEntry.header.fileName, toWrite);
         }
-
-        var result = files.toOwnedSlice();
-        this.fileEntries = result;
-        return result;
     }
 };
 
@@ -114,11 +122,18 @@ const FileEntry = struct {
     }
 
     pub fn decompressed(this: @This(), useC: bool, alloc: std.mem.Allocator) !DecompressionResult {
-        return switch (this.header.compressionMethod) {
+        var result = switch (this.header.compressionMethod) {
             0 => DecompressionResult{ .Already = this.contents },
             8 => DecompressionResult{ .Decompressed = try inflate.inflate(this.contents, this.header.uncompressedSize, useC, alloc) },
             else => return error.DeflateMethodUnsupported,
         };
+        errdefer result.deinit(alloc);
+
+        if (this.header.crc32 != crc32(result.contents())) {
+            return error.ZipFileCrc32Mismatch;
+        }
+
+        return result;
     }
 
     fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
