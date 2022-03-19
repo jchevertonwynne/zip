@@ -73,14 +73,11 @@ fn unzipZipFile(args: Args, alloc: std.mem.Allocator) !void {
             return error.ZipFileCrc32Mismatch;
         }
 
-        var writeFile = outDir.createFile(fileEntry.header.fileName, .{}) catch |err| {
-            if (err == error.IsDir) {
-                try outDir.makeDir(fileEntry.header.fileName);
-                continue;
-            }
-            return err;
-        };
-        defer writeFile.close();
-        try writeFile.writeAll(toWrite);
+        if (fileEntry.header.fileName[fileEntry.header.fileName.len - 1] == '/') {
+            try outDir.makeDir(fileEntry.header.fileName);
+            continue;
+        }
+
+        try outDir.writeFile(fileEntry.header.fileName, toWrite);
     }
 }
