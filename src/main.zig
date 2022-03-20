@@ -1,6 +1,5 @@
 const std = @import("std");
-const ZipFile = @import("zip.zig").ZipFile;
-const crc32 = @import("crc32.zig").crc32;
+const zip = @import("zip.zig");
 const zigargs = @import("zigargs");
 
 pub fn main() anyerror!void {
@@ -11,46 +10,39 @@ pub fn main() anyerror!void {
     var parsedArgs = try zigargs.parseForCurrentProcess(Args, alloc, .print);
     defer parsedArgs.deinit();
 
-    try parsedArgs.options.valid();
+    var args = parsedArgs.options;
+    try args.validate();
 
     switch (parsedArgs.options.mode) {
-        .unzip => try unzipZipFile(parsedArgs.options, alloc),
-        .zip => {
-            std.debug.print("zip is currently unimplemented\n", .{});
-            return error.ZipFileZipUnimplemented;
-        },
+        .unzip => try zip.unzip(args.file, args.outputdir, args.usec, alloc),
+        .zip => try zip.zip(args.file, args.inputdir, alloc),
     }
 }
 
 const Args = struct {
     file: []const u8 = &[_]u8{},
     outputdir: []const u8 = ".",
+    inputdir: []const u8 = ".",
     mode: enum { zip, unzip } = .unzip,
     usec: bool = false,
 
     pub const shorthands = .{
         .f = "file",
         .o = "outputdir",
+        .i = "inputdir",
         .m = "mode",
         .c = "usec",
     };
 
-    fn valid(this: @This()) !void {
+    fn validate(this: @This()) !void {
         if (this.file.len == 0) {
             return error.ArgsZipFileNameNotProvided;
         }
+        if (this.mode == .unzip and this.outputdir.len == 0) {
+            return error.ArgsZipFileOutputDirNotProvided;
+        }
+        if (this.mode == .zip and this.outputdir.len == 0) {
+            return error.ArgsZipFileInputDirNotProvided;
+        }
     }
 };
-
-fn unzipZipFile(args: Args, alloc: std.mem.Allocator) !void {
-    var sourceFile = try std.fs.cwd().openFile(args.file, .{});
-    defer sourceFile.close();
-
-    var outDir = try std.fs.cwd().openDir(args.outputdir, .{ .access_sub_paths = false });
-    defer outDir.close();
-
-    var zipFile = try ZipFile.new(&sourceFile, alloc);
-    defer zipFile.deinit(alloc);
-
-    try zipFile.decompress(outDir, args.usec, alloc);
-}

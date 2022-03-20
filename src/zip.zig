@@ -2,18 +2,43 @@ const std = @import("std");
 const inflate = @import("inflate.zig");
 const crc32 = @import("crc32.zig").crc32;
 
+pub fn unzip(file: []const u8, outputDir: []const u8, useC: bool, alloc: std.mem.Allocator) !void {
+    var sourceFile = try std.fs.cwd().openFile(file, .{});
+    defer sourceFile.close();
+
+    var outDir = try std.fs.cwd().openDir(outputDir, .{});
+    defer outDir.close();
+
+    var zipFile = try ZipFile.new(&sourceFile, alloc);
+    defer zipFile.deinit(alloc);
+
+    try zipFile.decompress(outDir, useC, alloc);
+}
+
+pub fn zip(file: []const u8, inputDir: []const u8, alloc: std.mem.Allocator) !void {
+    // var outFile = std.fs.cwd().createFile(file, .{});
+    // defer outFile.close();
+
+    var inDir = try std.fs.cwd().openDir(inputDir, .{ .iterate = true });
+    var walker = try inDir.walk(alloc);
+    defer walker.deinit();
+    while (try walker.next()) |entry| {
+        std.debug.print("{s} {} {} {s}\n", .{ entry.basename, entry.dir, entry.kind, entry.path });
+    }
+}
+
 const expectedHeaders: struct {
     fileEntry: [4]u8 = .{ 80, 75, 3, 4 },
     centralRespositoryFile: [4]u8 = .{ 80, 75, 1, 2 },
     endOfCentralDirectoryRecord: [4]u8 = .{ 80, 75, 5, 6 },
 } = .{};
 
-pub const ZipFile = struct {
+const ZipFile = struct {
     fileEntries: []FileEntry,
     centralDirectoryFileHeaders: []CentralDirectoryFileHeader,
     endOfCentralDirectoryRecord: EndOfCentralDirectoryRecord,
 
-    pub fn new(file: *std.fs.File, alloc: std.mem.Allocator) !ZipFile {
+    fn new(file: *std.fs.File, alloc: std.mem.Allocator) !ZipFile {
         try file.seekFromEnd(-22);
         var buf: [4]u8 = undefined;
         var read = try file.read(&buf);
@@ -71,7 +96,7 @@ pub const ZipFile = struct {
         return result;
     }
 
-    pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
+    fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
         for (this.fileEntries) |*f| {
             f.deinit(alloc);
         }
@@ -86,7 +111,7 @@ pub const ZipFile = struct {
         this.* = undefined;
     }
 
-    pub fn decompress(this: @This(), outDir: std.fs.Dir, useC: bool, alloc: std.mem.Allocator) !void {
+    fn decompress(this: @This(), outDir: std.fs.Dir, useC: bool, alloc: std.mem.Allocator) !void {
         for (this.fileEntries) |fileEntry| {
             var decompressedEntry = try fileEntry.decompressed(useC, alloc);
             defer decompressedEntry.deinit(alloc);
@@ -121,7 +146,7 @@ const FileEntry = struct {
         return @This(){ .header = header, .contents = contents };
     }
 
-    pub fn decompressed(this: @This(), useC: bool, alloc: std.mem.Allocator) !DecompressionResult {
+    fn decompressed(this: @This(), useC: bool, alloc: std.mem.Allocator) !DecompressionResult {
         var result = switch (this.header.compressionMethod) {
             0 => DecompressionResult{ .Already = this.contents },
             8 => DecompressionResult{ .Decompressed = try inflate.inflate(this.contents, this.header.uncompressedSize, useC, alloc) },
@@ -147,14 +172,14 @@ const DecompressionResult = union(enum) {
     Decompressed: []u8,
     Already: []u8,
 
-    pub fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
+    fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
         switch (this.*) {
             .Decompressed => |d| alloc.free(d),
             else => {},
         }
     }
 
-    pub fn contents(this: @This()) []u8 {
+    fn contents(this: @This()) []u8 {
         return switch (this) {
             .Decompressed => |decompressed| decompressed,
             .Already => |already| already,
