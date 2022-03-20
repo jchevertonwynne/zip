@@ -16,15 +16,110 @@ pub fn unzip(file: []const u8, outputDir: []const u8, useC: bool, alloc: std.mem
 }
 
 pub fn zip(file: []const u8, inputDir: []const u8, alloc: std.mem.Allocator) !void {
-    // var outFile = std.fs.cwd().createFile(file, .{});
-    // defer outFile.close();
+    var outFile = try std.fs.cwd().createFile(file, .{});
+    defer outFile.close();
 
+    var entries = std.ArrayList(CentralDirectoryFileHeader).init(alloc);
+    defer {
+        for (entries.items) |*entry| {
+            entry.deinit(alloc);
+        }
+        entries.deinit();
+    }
     var inDir = try std.fs.cwd().openDir(inputDir, .{ .iterate = true });
     var walker = try inDir.walk(alloc);
     defer walker.deinit();
+
+    var offset: usize = 0;
+
     while (try walker.next()) |entry| {
-        std.debug.print("{s} {} {} {s}\n", .{ entry.basename, entry.dir, entry.kind, entry.path });
+        var fileContents = switch (entry.kind) {
+            .File => try entry.dir.readFileAlloc(alloc, entry.basename, std.math.maxInt(usize)),
+            .Directory => "",
+            else => return error.ZipUnsupportedKind,
+        };
+        defer alloc.free(fileContents);
+
+        var fileNameArr = try std.ArrayList(u8).initCapacity(alloc, entry.path.len + 1);
+        defer fileNameArr.deinit();
+        fileNameArr.appendSlice(entry.path) catch unreachable;
+        if (entry.kind == .Directory) {
+            fileNameArr.append('/') catch unreachable;
+        }
+
+        var crc = crc32(fileContents);
+        var l = LocalFileHeader{
+            .minVersion = 0,
+            .bitFlag = 0,
+            .compressionMethod = 0,
+            .lastModificationTime = 0,
+            .lastModificationDate = 0,
+            .crc32 = crc,
+            .compressedSize = @truncate(u32, fileContents.len),
+            .uncompressedSize = @truncate(u32, fileContents.len),
+            .fileNameLength = @truncate(u16, fileNameArr.items.len),
+            .extraFieldLength = 0,
+            .fileName = try alloc.dupeZ(u8, fileNameArr.items),
+            .extraField = "",
+        };
+        defer alloc.free(l.fileName);
+
+        var centralDirectoryFileHeader = CentralDirectoryFileHeader{
+            .versionMadeBy = 0,
+            .minVersion = 0,
+            .generalPurposeBitFlag = 0,
+            .compressionMethod = 0,
+            .lastModificationTime = 0,
+            .lastModificationDate = 0,
+            .crc32 = crc,
+            .compressedSize = @truncate(u32, fileContents.len),
+            .uncompressedSize = @truncate(u32, fileContents.len),
+            .fileNameLength = @truncate(u16, fileNameArr.items.len),
+            .extraFieldLength = 0,
+            .fileCommentLength = 0,
+            .diskNumber = 0,
+            .internalFileAttributes = 0,
+            .externalFileAttributes = 0,
+            .relativeOffsetOfLocalFileHeader = @truncate(u32, offset),
+            .fileName = try alloc.dupeZ(u8, fileNameArr.items),
+            .extraField = "",
+            .fileComment = "",
+        };
+        errdefer alloc.free(centralDirectoryFileHeader.fileName);
+
+        var lBuf = l.buf();
+        try outFile.writeAll(&lBuf);
+        try outFile.writeAll(l.fileName);
+        try outFile.writeAll(fileContents);
+        offset += lBuf.len;
+        offset += l.fileName.len;
+        offset += fileContents.len;
+
+        try entries.append(centralDirectoryFileHeader);
     }
+
+    var centralDirectoryStartOffset = offset;
+
+    for (entries.items) |entry| {
+        var eBuf = entry.buf();
+        try outFile.writeAll(&eBuf);
+        try outFile.writeAll(entry.fileName);
+        offset += eBuf.len;
+        offset += entry.fileName.len;
+    }
+
+    var endOfCentralDirectoryRecord = EndOfCentralDirectoryRecord{
+        .diskNumber = 0,
+        .startDiskNumber = 0,
+        .recordsOnDisk = @truncate(u16, entries.items.len),
+        .totalRecords = @truncate(u16, entries.items.len),
+        .centralDirectorySize = @truncate(u16, entries.items.len),
+        .centralDirectoryOffset = @truncate(u32, centralDirectoryStartOffset),
+        .commentLength = 0,
+        .comment = "",
+    };
+    var eBuf = endOfCentralDirectoryRecord.buf();
+    try outFile.writeAll(&eBuf);
 }
 
 const expectedHeaders: struct {
@@ -198,8 +293,8 @@ const LocalFileHeader = struct {
     uncompressedSize: u32,
     fileNameLength: u16,
     extraFieldLength: u16,
-    fileName: []u8,
-    extraField: []u8,
+    fileName: []const u8,
+    extraField: []const u8,
 
     fn new(file: *std.fs.File, alloc: std.mem.Allocator, comptime checkHeader: bool) !@This() {
         const header: ?[4]u8 = if (checkHeader) expectedHeaders.fileEntry else null;
@@ -210,6 +305,10 @@ const LocalFileHeader = struct {
         alloc.free(this.fileName);
         alloc.free(this.extraField);
         this.* = undefined;
+    }
+
+    fn buf(this: @This()) [intFieldSize(@This()) + 4]u8 {
+        return toBuf(this, expectedHeaders.fileEntry);
     }
 };
 
@@ -230,9 +329,9 @@ const CentralDirectoryFileHeader = struct {
     internalFileAttributes: u16,
     externalFileAttributes: u32,
     relativeOffsetOfLocalFileHeader: u32,
-    fileName: []u8,
-    extraField: []u8,
-    fileComment: []u8,
+    fileName: []const u8,
+    extraField: []const u8,
+    fileComment: []const u8,
 
     fn new(file: *std.fs.File, alloc: std.mem.Allocator, comptime checkHeader: bool) !@This() {
         const header: ?[4]u8 = if (checkHeader) expectedHeaders.centralRespositoryFile else null;
@@ -245,6 +344,10 @@ const CentralDirectoryFileHeader = struct {
         alloc.free(this.fileComment);
         this.* = undefined;
     }
+
+    fn buf(this: @This()) [intFieldSize(@This()) + 4]u8 {
+        return toBuf(this, expectedHeaders.centralRespositoryFile);
+    }
 };
 
 const EndOfCentralDirectoryRecord = struct {
@@ -255,7 +358,7 @@ const EndOfCentralDirectoryRecord = struct {
     centralDirectorySize: u32,
     centralDirectoryOffset: u32,
     commentLength: u16,
-    comment: []u8,
+    comment: []const u8,
 
     fn new(file: *std.fs.File, alloc: std.mem.Allocator, comptime checkHeader: bool) !@This() {
         const header: ?[4]u8 = if (checkHeader) expectedHeaders.endOfCentralDirectoryRecord else null;
@@ -265,6 +368,10 @@ const EndOfCentralDirectoryRecord = struct {
     fn deinit(this: *@This(), alloc: std.mem.Allocator) void {
         alloc.free(this.comment);
         this.* = undefined;
+    }
+
+    fn buf(this: @This()) [intFieldSize(@This()) + 4]u8 {
+        return toBuf(this, expectedHeaders.endOfCentralDirectoryRecord);
     }
 };
 
@@ -278,6 +385,31 @@ fn intFieldSize(comptime T: type) usize {
     }
 
     return size;
+}
+
+fn toBuf(object: anytype, header: [4]u8) [intFieldSize(@TypeOf(object)) + 4]u8 {
+    const T = @TypeOf(object);
+    var result: [intFieldSize(T) + 4]u8 = undefined;
+
+    std.mem.copy(u8, result[0..4], &header);
+
+    var index: usize = 4;
+
+    inline for (@typeInfo(T).Struct.fields) |field| {
+        switch (@typeInfo(field.field_type)) {
+            .Int => {
+                var val = @field(object, field.name);
+                var end = index + @sizeOf(field.field_type);
+                while (index < end) : (index += 1) {
+                    result[index] = @truncate(u8, val);
+                    val >>= 8;
+                }
+            },
+            else => {},
+        }
+    }
+
+    return result;
 }
 
 fn fillObject(comptime T: type, file: *std.fs.File, alloc: std.mem.Allocator, comptime header: ?[4]u8) !T {
